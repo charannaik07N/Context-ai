@@ -1,4 +1,6 @@
-import { useState, useContext } from "react";
+import os
+
+content = """import { useState, useContext } from "react";
 import { Info, Github, Layers, Shield, Zap, Activity } from "lucide-react";
 import { AppContext } from "../context/AppContext";
 import { getMetrics } from "../services/api";
@@ -203,3 +205,8 @@ export default function About() {
     </div>
   );
 }
+"""
+
+with open(r"c:\Users\Harish\OneDrive\Desktop\PROJECTS\Contexta-AI\frontend\src\pages\About.jsx", "w", encoding="utf-8") as f:
+    f.write(content)
+print("Updated About page successfully.")

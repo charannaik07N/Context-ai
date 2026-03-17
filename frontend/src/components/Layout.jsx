@@ -1,14 +1,11 @@
-import Navbar from "./Navbar";
 import Sidebar from "./Sidebar";
 
 export default function Layout({ children }) {
   return (
-    <div className="app-shell">
-      <Navbar />
-
-      <div className="app-body">
-        <Sidebar />
-        <div className="workspace">{children}</div>
+    <div className="flex h-screen bg-bg-dark text-text-main overflow-hidden">
+      <Sidebar />
+      <div className="flex-1 flex flex-col min-w-0">
+        {children}
       </div>
     </div>
   );

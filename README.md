@@ -7,6 +7,7 @@ Contexta AI is a GenAI-powered tool that helps students, researchers, and profes
 ## Overview
 
 Contexta AI leverages advanced NLP and machine learning to allow users to:
+
 - Upload research papers in PDF format
 - Ask questions in plain English and receive intelligent answers
 - Generate one-line summaries and key insights
@@ -32,6 +33,7 @@ Contexta AI leverages advanced NLP and machine learning to allow users to:
 ## Technology Stack
 
 ### Backend
+
 - **Language**: Python 3.x
 - **LLM Provider**: Groq API (Llama 3.3-70b-versatile model)
 - **RAG Framework**: LangChain
@@ -43,6 +45,7 @@ Contexta AI leverages advanced NLP and machine learning to allow users to:
 - **Environment Management**: python-dotenv
 
 ### Frontend
+
 - **Framework**: React 18.2.0
 - **Build Tool**: Vite 5.0.8
 - **Routing**: React Router v7
@@ -51,6 +54,7 @@ Contexta AI leverages advanced NLP and machine learning to allow users to:
 - **Styling**: CSS with Tailwind configuration
 
 ### Database
+
 - **Vector Storage**: FAISS with persistent local storage
 - **Embedding Model**: Hugging Face sentence-transformers
 
@@ -58,7 +62,7 @@ Contexta AI leverages advanced NLP and machine learning to allow users to:
 
 ## Project Structure
 
-```
+````
 Contexta AI/
 ├── backend/
 │   ├── main.py                 # FastAPI application and routes
@@ -105,14 +109,16 @@ cd Contexta-AI
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+````
 
 3. Install Python dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 4. Create environment configuration file (.env):
+
 ```bash
 # Create .env file in project root
 echo GROQ_API_KEY=your_groq_api_key_here > .env
@@ -123,16 +129,19 @@ Note: Obtain your Groq API key from https://console.groq.com
 ### Frontend Setup
 
 1. Navigate to frontend directory:
+
 ```bash
 cd frontend
 ```
 
 2. Install dependencies:
+
 ```bash
 npm install
 ```
 
 3. Start development server:
+
 ```bash
 npm run dev
 ```
@@ -146,6 +155,7 @@ The frontend will be available at http://localhost:5173
 ### Start Backend Server
 
 From project root:
+
 ```bash
 python main.py
 ```
@@ -202,19 +212,23 @@ The application requires a Groq API key for LLM functionality:
 ## Troubleshooting
 
 **"No PDF has been processed yet" error**
+
 - Ensure a PDF file has been successfully uploaded and processed
 - Check vector_store directory exists and contains FAISS files
 
 **CORS errors from frontend**
+
 - Verify backend is running on http://localhost:8000
 - Check CORS configuration in main.py matches frontend origin
 
 **PDF upload fails**
+
 - Ensure file is valid PDF format
 - Check uploaded_docs directory has write permissions
 - Verify file size is under 50MB
 
 **API key errors**
+
 - Confirm GROQ_API_KEY is set in .env file
 - Verify API key is valid and has active quota
 - Restart backend after changing .env file
@@ -227,7 +241,7 @@ The application requires a Groq API key for LLM functionality:
 - Advanced search filters and sorting
 - Custom prompt templates
 - Document annotation features
-- Export summary to PDF/Word
+- Export summary to PDF
 - Collaborative sharing features
 - API rate limiting and user authentication
 - Support for multiple document formats
