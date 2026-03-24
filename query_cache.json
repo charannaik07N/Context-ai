@@ -1,0 +1,86 @@
+{
+  "[\"what is the offered role or designation in the offer letters?\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077276.0099938,
+    "payload": {
+      "answer": "Frontend Developer",
+      "sources": [
+        {
+          "source": "Offer_Letter_Kethavath Charan Nayak_M1235.pdf",
+          "file": "Offer_Letter_Kethavath Charan Nayak_M1235.pdf",
+          "snippet": "Page 1 of 2 REF: P/IL/26/NOIDA/M1235 LETTER OF OFFER Dear Kethavath Charan Nayak, Congratulations!! Dated: 10-Mar-2026 STRICTLY PRIVATE & CONFIDENTIAL We are pleased to offer you an Internship with M/s Prodesk IT, Noida ",
+          "page": 0
+        }
+      ]
+    }
+  },
+  "[\"what is the joining or commencement date mentioned in the offer documents?\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077283.911262,
+    "payload": {
+      "answer": "11-Mar-2026",
+      "sources": [
+        {
+          "source": "Offer_Letter_Kethavath Charan Nayak_M1235.pdf",
+          "file": "Offer_Letter_Kethavath Charan Nayak_M1235.pdf",
+          "snippet": "Page 1 of 2 REF: P/IL/26/NOIDA/M1235 LETTER OF OFFER Dear Kethavath Charan Nayak, Congratulations!! Dated: 10-Mar-2026 STRICTLY PRIVATE & CONFIDENTIAL We are pleased to offer you an Internship with M/s Prodesk IT, Noida ",
+          "page": 0
+        }
+      ]
+    }
+  },
+  "[\"what compensation or salary details are present in the offer letters?\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077292.4022338,
+    "payload": {
+      "answer": "Rs.16,000",
+      "sources": [
+        {
+          "source": "Offer - KETHAVATH CHARAN NAIK - NYOL6567.pdf",
+          "file": "Offer - KETHAVATH CHARAN NAIK - NYOL6567.pdf",
+          "snippet": "NYERAS EDU-TECH AND INNOVATIONS PRIVATE LIMITED 2nd Floor, 1161, AECS Layout, Singasandra, Bengaluru, Karnataka - 560068 /nyerasinnovations /Nyeras Edutech and Innovations Pvt. Ltd. +917989098610 www.nyeras.com hr@nyeras",
+          "page": 0
+        }
+      ]
+    }
+  },
+  "[\"what company or office location is specified in the uploaded offer documents?\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077300.5680878,
+    "payload": {
+      "answer": "Noida",
+      "sources": [
+        {
+          "source": "WHO-Cancer-Modules-Dg-Treatment.pdf",
+          "file": "WHO-Cancer-Modules-Dg-Treatment.pdf",
+          "snippet": "Cancer experts worldwide, as well as technical staff in WHO headquarters and in WHO regional and country offices, also provided valuable input by making contributions and reviewing the module, and are listed in the Ackno",
+          "page": 3
+        }
+      ]
+    }
+  },
+  "[\"summarize the key limitations listed in the project limitations document.\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077304.2787638,
+    "payload": {
+      "answer": "The project limitations document lists several key limitations, including a single-PDF indexing workflow, fixed chunk size for all documents, no semantic reranking after retrieval, embedding generation on CPU only, recomputing embeddings for duplicate/similar files, broad retrieval depth without optimization, no query/result caching, synchronous heavy processing in the request path, and FAISS index growth without pruning. These limitations can cause issues such as wasted compute, slow reuse, low-quality retrieval, slower/fuzzier answers, limited embedding throughput, and increased latency and cost.",
+      "sources": [
+        {
+          "source": "project limitations.pdf",
+          "file": "project limitations.pdf",
+          "snippet": "Performance Limita\u019fon Why It Hurts Performance Prac\u019fcal Fix Single-PDF indexing work\ufb02ow Rebuilding the index for each new upload wastes compute and blocks fast reuse Keep a persistent mul\u019f-document index and append new c",
+          "page": 0
+        }
+      ]
+    }
+  },
+  "[\"what are the main treatment-related themes described in the who cancer modules document?\",\"9f4744f9acfd34beeface65a55b6e704caea025347e965126efe3003b4f74523\",8,\"default\"]": {
+    "expires_at": 1774077311.162695,
+    "payload": {
+      "answer": "The main treatment-related themes described in the WHO cancer modules document include curing cancer patients or prolonging their life considerably, ensuring a good quality of life, and providing equitable and sustainable diagnosis and treatment services. The document emphasizes the importance of a multidisciplinary approach, integration with early detection and palliative care activities, and consideration of cost-effectiveness, affordability, and social and ethical aspects. It also highlights the need for health professionals to decide when therapeutic measures are no longer beneficial and to institute palliative care instead. Additionally, the document stresses the importance of targeting patients with curable cancers first and then extending services to those with treatable but not curable cancers.",
+      "sources": [
+        {
+          "source": "WHO-Cancer-Modules-Dg-Treatment.pdf",
+          "file": "WHO-Cancer-Modules-Dg-Treatment.pdf",
+          "snippet": "3 The key messages for people involved in planning cancer diagnosis and treatment services are as follows: p The main goals of a diagnosis and treatment programme are to cure or considerably prolong the life of cancer pa",
+          "page": 10
+        }
+      ]
+    }
+  }
+}

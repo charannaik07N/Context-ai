@@ -1,0 +1,7 @@
+# Offer-letter and project-document oriented benchmark queries
+What is the offered role or designation in the offer letters?
+What is the joining or commencement date mentioned in the offer documents?
+What compensation or salary details are present in the offer letters?
+What company or office location is specified in the uploaded offer documents?
+Summarize the key limitations listed in the project limitations document.
+What are the main treatment-related themes described in the WHO cancer modules document?

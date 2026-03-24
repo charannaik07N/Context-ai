@@ -126,6 +126,49 @@ echo GROQ_API_KEY=your_groq_api_key_here > .env
 
 Note: Obtain your Groq API key from https://console.groq.com
 
+### Optional GPU Setup
+
+Contexta now auto-selects CUDA for embeddings and reranking when available.
+
+1. Add/update these variables in `.env`:
+
+```bash
+GPU_ENABLED=true
+GPU_DEVICE_ID=0
+EMBEDDING_DEVICE=auto
+RERANKER_DEVICE=auto
+
+# Embeddings/reranker quality upgrades
+EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+RERANKER_MODEL=BAAI/bge-reranker-large
+RERANKER_BATCH_SIZE=32
+
+# Local LLM path (Ollama) with Groq fallback
+LLM_PROVIDER=auto
+OLLAMA_ENABLED=true
+OLLAMA_MODEL=llama3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+2. Run the GPU health check:
+
+```bash
+python gpu_health_check.py
+```
+
+3. Start backend with environment bootstrapping (Windows PowerShell):
+
+```powershell
+.\start_with_gpu.ps1
+```
+
+Notes:
+
+- If CUDA is available, runtime device resolves to `cuda:<GPU_DEVICE_ID>`.
+- If CUDA is unavailable, Contexta falls back safely to CPU.
+- DGX SSH reachability is checked by `gpu_health_check.py` when `GPU_ENABLED=true` and DGX fields are set.
+- With `OLLAMA_ENABLED=true`, Contexta tries local Ollama first and falls back to Groq if local model is unavailable.
+
 ### Frontend Setup
 
 1. Navigate to frontend directory:
@@ -196,6 +239,66 @@ The application requires a Groq API key for LLM functionality:
 2. Generate an API key
 3. Add to .env file: GROQ_API_KEY=your_key
 4. Restart the backend server
+
+---
+
+## Observability: Tracing and Alerts
+
+Contexta now includes optional distributed tracing and ready-to-use Prometheus alert rules.
+
+### Distributed Tracing (OpenTelemetry + OTLP)
+
+Set these environment variables:
+
+```bash
+TRACING_ENABLED=true
+TRACING_EXPORTER=otlp
+OTEL_SERVICE_NAME=contexta-api
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+When enabled, each HTTP request is emitted as a trace span with request ID, route, status, and namespace attributes.
+
+### Alert Rules
+
+Prometheus alert rule file is included at:
+
+- `observability/prometheus/contexta-alerts.yml`
+
+Included baseline alerts:
+
+- High 5xx error ratio
+- High p95 latency
+- Sustained HTTP 429 pressure
+- No-traffic signal
+
+### Observability Readiness Endpoint
+
+Use this endpoint to verify backend status at runtime:
+
+- `GET /observability/status`
+
+It reports tracing exporter state, queue backend readiness, and rate-limit backend readiness.
+
+---
+
+## Tenant Isolation Controls
+
+Contexta now supports deployment-level tenant pinning to enforce hard boundaries in shared runtime environments.
+
+Set:
+
+```bash
+DEPLOYMENT_TENANT_ID=tenant-a
+JWT_TENANT_CLAIM=tenant_id
+```
+
+Behavior:
+
+- JWT mode: token tenant claim must match `DEPLOYMENT_TENANT_ID`, or request is denied.
+- Legacy key mode: resolved tenant identity must match `DEPLOYMENT_TENANT_ID`, or request is denied.
+
+This lets you run one deployment per tenant with isolated storage/queue configs for stronger data-plane separation.
 
 ---
 

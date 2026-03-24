@@ -1,4 +1,5 @@
 import { createContext, useState, useEffect } from "react";
+import { getIndexStatus } from "../services/api";
 
 export const AppContext = createContext(null);
 
@@ -51,6 +52,28 @@ export function AppProvider({ children }) {
   useEffect(() => {
     localStorage.setItem("chatMessages", JSON.stringify(messages));
   }, [messages]);
+
+  // Keep local UI state aligned with backend namespace index readiness.
+  useEffect(() => {
+    let active = true;
+
+    const syncIndexStatus = async () => {
+      try {
+        const result = await getIndexStatus();
+        if (!active) return;
+        const ready = Boolean(result?.ready);
+        setDocumentReady(ready);
+      } catch {
+        // Ignore transient API errors here and preserve current UI state.
+      }
+    };
+
+    syncIndexStatus();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <AppContext.Provider

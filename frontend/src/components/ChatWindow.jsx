@@ -26,24 +26,50 @@ export default function ChatWindow() {
   }, [messages, loading]);
 
   const typeAnswer = (fullText, sources = []) => {
+    const text = String(fullText || "");
+    if (!text) {
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: "ai", text: "", sources };
+        return updated;
+      });
+      return;
+    }
+
+    // Long answers should appear immediately to avoid multi-second typing delay.
+    if (text.length > 240) {
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: "ai", text, sources };
+        return updated;
+      });
+      return;
+    }
+
     let index = 0;
     let currentText = "";
+    const chunkSize = text.length > 140 ? 10 : 4;
+    const intervalMs = text.length > 140 ? 10 : 12;
     if (typingIntervalRef.current) clearInterval(typingIntervalRef.current);
 
     typingIntervalRef.current = setInterval(() => {
-      if (index >= fullText.length) {
+      if (index >= text.length) {
         clearInterval(typingIntervalRef.current);
         typingIntervalRef.current = null;
         return;
       }
-      currentText += fullText[index];
-      index++;
+      currentText += text.slice(index, index + chunkSize);
+      index += chunkSize;
       setMessages((prev) => {
         const updated = [...prev];
-        updated[updated.length - 1] = { role: "ai", text: currentText, sources };
+        updated[updated.length - 1] = {
+          role: "ai",
+          text: currentText,
+          sources,
+        };
         return updated;
       });
-    }, 15);
+    }, intervalMs);
   };
 
   const sendMessage = async (overrideInput) => {
@@ -57,11 +83,24 @@ export default function ChatWindow() {
     try {
       const response = await askQuestion(messageText);
       const fullAnswer = response.answer || "No answer returned.";
-      const sourceList = Array.isArray(response.sources) ? response.sources : [];
-      setMessages((prev) => [...prev, { role: "ai", text: "", sources: sourceList }]);
+      const sourceList = Array.isArray(response.sources)
+        ? response.sources
+        : [];
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", text: "", sources: sourceList },
+      ]);
       typeAnswer(fullAnswer, sourceList);
     } catch (err) {
-      setMessages((prev) => [...prev, { role: "ai", text: "⚠️ Error getting answer from backend.", sources: [] }]);
+      const detail = err?.response?.data?.detail;
+      const errorText =
+        typeof detail === "string" && detail.trim()
+          ? `Error: ${detail}`
+          : "Error: Unable to get an answer from the backend.";
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", text: errorText, sources: [] },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -70,7 +109,7 @@ export default function ChatWindow() {
   const suggestedQuestions = [
     "Summarize the key points",
     "What are the main findings?",
-    "Explain the methodology"
+    "Explain the methodology",
   ];
 
   return (
@@ -81,9 +120,12 @@ export default function ChatWindow() {
             <div className="w-12 h-12 bg-primary/10 text-primary rounded-xl flex items-center justify-center mb-6">
               <Sparkles className="w-6 h-6" />
             </div>
-            <h2 className="text-2xl font-bold text-text-main mb-3">Ask about your document</h2>
+            <h2 className="text-2xl font-bold text-text-main mb-3">
+              Ask about your document
+            </h2>
             <p className="text-text-muted mb-8 text-sm max-w-md">
-              Your document is ready. You can ask for a summary, extract specific details, or clarify complex topics.
+              Your document is ready. You can ask for a summary, extract
+              specific details, or clarify complex topics.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
               {suggestedQuestions.map((q) => (
@@ -100,7 +142,12 @@ export default function ChatWindow() {
         ) : (
           <>
             {messages.map((msg, index) => (
-              <MessageBubble key={index} role={msg.role} text={msg.text} sources={msg.sources || []} />
+              <MessageBubble
+                key={index}
+                role={msg.role}
+                text={msg.text}
+                sources={msg.sources || []}
+              />
             ))}
             {loading && (
               <div className="flex w-full items-end justify-start animate-pulse">
