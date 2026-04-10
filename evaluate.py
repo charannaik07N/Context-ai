@@ -30,12 +30,14 @@ import io
 from pathlib import Path
 from collections import Counter
 from dotenv import load_dotenv
+from core.gpu_runtime import configure_gpu_environment
 
 # Force UTF-8 output on Windows to avoid charmap errors
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-load_dotenv()
+load_dotenv(override=True)
+configure_gpu_environment()
 
 # ---------------------------------------------------------------------------
 # ❶  Optional: auto-process a PDF before running tests

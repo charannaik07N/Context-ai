@@ -1,8 +1,10 @@
 import gradio as gr
 from dotenv import load_dotenv
 from pathlib import Path
+from core.gpu_runtime import configure_gpu_environment
 
-load_dotenv()
+load_dotenv(override=True)
+configure_gpu_environment()
 
 from rag_pipeline import (
     process_pdf,

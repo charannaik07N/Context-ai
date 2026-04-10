@@ -7,6 +7,19 @@ class _Doc:
         self.metadata = metadata or {}
 
 
+class _VectorStoreStub:
+    def __init__(self, docs_by_query, docstore_docs=None):
+        self._docs_by_query = docs_by_query
+        self.docstore = type("DocStore", (), {"_dict": docstore_docs or {}})()
+
+    def similarity_search(self, question, k=6, filter=None):
+        q = (question or "").lower()
+        for key, docs in self._docs_by_query.items():
+            if key in q:
+                return docs[:k]
+        return self._docs_by_query.get("default", [])[:k]
+
+
 def test_score_direction_higher_is_better_for_similarity(monkeypatch):
     import rag_pipeline
     rp = importlib.reload(rag_pipeline)
@@ -70,5 +83,95 @@ def test_ask_question_returns_unknown_when_both_passes_weak(monkeypatch):
 
     result = rp.ask_question_with_sources("What is the payment retry policy?", namespace="team-a")
 
-    assert result["answer"] == "I don't know based on the provided context."
+    assert result["answer"] == "I don't know based on the provided documents."
     assert result["sources"] == []
+
+
+def test_is_count_question_handles_noisy_prompt(monkeypatch):
+    import rag_pipeline
+    rp = importlib.reload(rag_pipeline)
+
+    assert rp._is_count_question("GIVE ME HOW MANY limitation are the give me count") is True
+
+
+def test_extract_count_value_parses_number_words(monkeypatch):
+    import rag_pipeline
+    rp = importlib.reload(rag_pipeline)
+
+    result = rp._extract_count_value(
+        "There are five limitations in this document.",
+        "",
+    )
+    assert result == "5"
+
+
+def test_fast_count_response_uses_fallback_queries_and_docstore(monkeypatch):
+    import rag_pipeline
+    rp = importlib.reload(rag_pipeline)
+
+    limitation_docs = [
+        _Doc(
+            "Performance limitations:\n1) Rebuilding index on each upload.\n2) Fixed chunk size.\n3) No reranker.\n4) CPU-only embeddings.\n5) No deduplication.",
+            {"source": "limits_test.txt", "page": 0},
+        )
+    ]
+    unrelated_docs = [_Doc("Unrelated architecture notes.", {"source": "other.txt", "page": 0})]
+
+    vectorstore = _VectorStoreStub(
+        docs_by_query={
+            "default": unrelated_docs,
+            "limitation": limitation_docs,
+        },
+        docstore_docs={
+            "a": limitation_docs[0],
+            "b": unrelated_docs[0],
+        },
+    )
+
+    monkeypatch.setattr(rp, "_load_vectorstore", lambda namespace=None: vectorstore)
+
+    response = rp._fast_count_response("GIVE ME HOW MANY limitation are the give me count", namespace="team-a")
+
+    assert response is not None
+    assert "5" in response["answer"]
+    assert "limitations" in response["answer"].lower()
+
+
+def test_ask_question_recovers_from_threshold_failure_via_keyword_fallback(monkeypatch):
+    import rag_pipeline
+    rp = importlib.reload(rag_pipeline)
+
+    monkeypatch.setattr(rp, "vector_store_exists", lambda namespace=None: True)
+    monkeypatch.setattr(rp, "_recommended_k_per_source", lambda question: 10)
+    monkeypatch.setattr(rp, "_cache_get", lambda cache_key: None)
+    monkeypatch.setattr(rp, "_cache_set", lambda cache_key, payload: None)
+
+    weak_docs = [_Doc("general overview without retrieval details", {"source": "doc-weak", "chunk_hash": "w1", "vector_score": 2.0})]
+    faiss_docs = [_Doc("FAISS index growth without pruning can slow retrieval and increase memory usage.", {"source": "doc-faiss", "chunk_hash": "f1", "vector_score": 1.8})]
+
+    monkeypatch.setattr(rp, "_build_multi_source_docs", lambda question, k_per_source=10, namespace=None: weak_docs)
+    monkeypatch.setattr(rp, "_keyword_fallback_docs", lambda question, namespace=None, max_docs=12: faiss_docs)
+    monkeypatch.setattr(
+        rp,
+        "_passes_retrieval_threshold",
+        lambda docs: any("faiss" in (d.page_content or "").lower() for d in docs),
+    )
+    monkeypatch.setattr(
+        rp,
+        "_run_prompt_with_context",
+        lambda question, context, enforce_grounding=True: "FAISS index growth without pruning can slow retrieval and increase memory usage.",
+    )
+
+    result = rp.ask_question_with_sources("What is the FAISS limitation?", namespace="team-a")
+
+    assert "FAISS" in result["answer"]
+    assert "retrieval" in result["answer"].lower()
+    assert isinstance(result.get("sources"), list)
+
+
+def test_recommended_k_for_short_query_is_at_least_ten(monkeypatch):
+    import rag_pipeline
+    rp = importlib.reload(rag_pipeline)
+
+    k = rp._recommended_k_per_source("FAISS limitation?")
+    assert k >= 10

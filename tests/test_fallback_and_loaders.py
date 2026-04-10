@@ -54,3 +54,34 @@ def test_groq_enabled_respects_provider_mode(monkeypatch):
 
     monkeypatch.setattr(rp, "LLM_PROVIDER", "groq")
     assert rp._groq_enabled() is True
+
+
+def test_offer_context_detector_is_false_for_general_technical_text(monkeypatch):
+    rp = _reload_rag_pipeline(monkeypatch)
+    context = "FAISS index growth without pruning can increase memory usage and retrieval latency."
+
+    assert rp._looks_like_offer_letter_context(context) is False
+
+
+def test_offer_context_detector_is_true_for_offer_letter_text(monkeypatch):
+    rp = _reload_rag_pipeline(monkeypatch)
+    context = (
+        "Offer Letter\n"
+        "Your designation is Frontend Developer Intern.\n"
+        "Date of commencement will be from 11-Mar-2026.\n"
+        "Monthly stipend and CTC are described below."
+    )
+
+    assert rp._looks_like_offer_letter_context(context) is True
+
+
+def test_run_prompt_does_not_apply_offer_extractor_for_general_pdf(monkeypatch):
+    rp = _reload_rag_pipeline(monkeypatch)
+
+    monkeypatch.setattr(rp, "_extract_offer_field_directly", lambda q, c: "EXTRACTED_OFFER_FIELD")
+    monkeypatch.setattr(rp, "load_llm", lambda: None)
+
+    context = "FAISS index growth without pruning can increase memory usage and retrieval latency."
+    answer = rp._run_prompt_with_context("Where is FAISS discussed?", context)
+
+    assert "EXTRACTED_OFFER_FIELD" not in answer

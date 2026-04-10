@@ -23,10 +23,20 @@ if ($gpuEnabled) {
   if (-not $env:CUDA_DEVICE_ORDER) {
     $env:CUDA_DEVICE_ORDER = "PCI_BUS_ID"
   }
+  if (-not $env:OLLAMA_NUM_GPU) {
+    $env:OLLAMA_NUM_GPU = "99"
+  }
+  if (-not $env:OLLAMA_GPU_ONLY) {
+    $env:OLLAMA_GPU_ONLY = "true"
+  }
 }
 
 Write-Output "[GPU] Running health check"
 & .\.venv\Scripts\python.exe .\gpu_health_check.py
+$healthExitCode = $LASTEXITCODE
+if ($healthExitCode -ne 0) {
+  Write-Output "[GPU] Health check returned exit code $healthExitCode. Continuing with runtime fallback selection."
+}
 
 $localCuda = $false
 try {

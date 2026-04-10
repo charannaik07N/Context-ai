@@ -1,4 +1,10 @@
 import gc
+from dotenv import load_dotenv
+from core.gpu_runtime import configure_gpu_environment
+
+load_dotenv(override=True)
+configure_gpu_environment()
+
 from rag_pipeline import append_document_to_vector_store, compute_metrics
 
 

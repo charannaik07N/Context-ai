@@ -1,0 +1,99 @@
+Contexta AI - Limitations Knowledge Seed
+
+This file contains paired question-answer-context items for retrieval grounding.
+
+Q: What is the issue with a single-PDF indexing workflow?
+A: Rebuilding the index for each new upload wastes computation and prevents reuse of previously processed data.
+Context: Single-PDF indexing workflow causes inefficiency because rebuilding the index for each upload wastes compute and blocks reuse.
+
+Q: How can single-PDF indexing inefficiency be fixed?
+A: Use a persistent multi-document index and append new chunks instead of rebuilding the entire index.
+Context: To fix single-PDF indexing inefficiency, maintain a persistent index and append new chunks instead of full rebuilds.
+
+Q: Why is using a fixed chunk size for all documents problematic?
+A: A single chunking strategy does not suit all PDFs, leading to too many chunks or poor retrieval quality.
+Context: Fixed chunk size is inefficient because different PDFs require different chunking strategies for optimal retrieval.
+
+Q: What is the recommended solution for chunking?
+A: Use adaptive chunking based on page density and headings, and tune chunk size and overlap per document type.
+Context: Adaptive chunking improves retrieval by adjusting chunk size and overlap based on document structure.
+
+Q: What happens if semantic reranking is not used after retrieval?
+A: Top-k retrieval may return similar but not the most relevant results, leading to slower and less accurate answers.
+Context: Without reranking, retrieval returns approximate matches instead of the best evidence.
+
+Q: How can retrieval quality be improved?
+A: Add a reranker (cross-encoder) on top of retrieved results before generating the final answer.
+Context: Semantic reranking improves answer quality by selecting the most relevant chunks.
+
+Q: Why is generating embeddings only on CPU inefficient?
+A: Large PDFs take longer to process because CPU-based embedding generation has limited throughput.
+Context: CPU-only embedding slows down processing of large documents.
+
+Q: What is the solution for faster embedding generation?
+A: Batch embeddings, enable GPU processing, and cache embeddings using document hashes.
+Context: Embedding performance can be improved using batching, GPU acceleration, and caching.
+
+Q: What is the problem with recomputing embeddings for duplicate files?
+A: It wastes time and memory by processing the same content repeatedly.
+Context: Duplicate embedding computation leads to inefficiency and resource waste.
+
+Q: How can duplicate embedding computation be avoided?
+A: Use file hash and chunk hash deduplication to skip unchanged content.
+Context: Deduplication using hashing prevents redundant embedding computation.
+
+Q: Why is using a high retrieval depth inefficient?
+A: It increases token usage, latency, and cost without necessarily improving answer quality.
+Context: High retrieval depth increases computation cost and latency.
+
+Q: What is the optimized approach for retrieval depth?
+A: Use dynamic k values based on query complexity and apply context compression.
+Context: Dynamic retrieval depth improves efficiency and reduces cost.
+
+Q: What is the impact of not using query/result caching?
+A: Repeated queries trigger full retrieval and generation again, increasing latency.
+Context: Without caching, repeated queries cause redundant processing.
+
+Q: How can caching improve performance?
+A: Cache answers using normalized queries and document versions with a short TTL.
+Context: Caching reduces repeated computation and improves response time.
+
+Q: Why is synchronous heavy processing harmful?
+A: It blocks request threads and reduces system responsiveness under load.
+Context: Heavy processing in request path causes system slowdown.
+
+Q: What is the recommended fix for heavy processing?
+A: Move PDF processing to background job queues and return job status to the frontend.
+Context: Asynchronous processing improves scalability and responsiveness.
+
+Q: What happens when a FAISS index grows without pruning?
+A: Retrieval becomes slower and memory usage increases.
+Context: Large FAISS indexes degrade performance if not managed.
+
+Q: How can FAISS index growth be managed?
+A: Periodically prune low-value chunks and use optimized index types like IVF or HNSW.
+Context: Index pruning and advanced indexing methods improve scalability.
+
+Q: Why is running evaluation in the main pipeline inefficient?
+A: It consumes time and model resources, competing with normal user queries.
+Context: Evaluation workloads interfere with production performance.
+
+Q: What is the best practice for evaluation?
+A: Run evaluation asynchronously or offline on a schedule instead of during user requests.
+Context: Offline evaluation prevents resource contention.
+
+Q: Why is minimal preprocessing harmful for PDFs?
+A: Noise like headers, footers, and OCR errors creates irrelevant chunks and degrades retrieval.
+Context: Poor preprocessing leads to noisy and irrelevant retrieval results.
+
+Q: How should preprocessing be improved?
+A: Clean text, remove boilerplate, deduplicate repeated lines, and use section-aware splitting.
+Context: Proper preprocessing improves retrieval quality.
+
+Q: Why is passing large context directly to the LLM inefficient?
+A: More tokens increase inference time and can reduce answer quality.
+Context: Large context increases latency and may degrade output quality.
+
+Q: What is the solution for large context handling?
+A: Use map-reduce or summarize-then-answer pipelines to keep prompts compact.
+Context: Context compression techniques improve efficiency and accuracy.

@@ -1,364 +1,324 @@
-# Contexta AI
+# Contexta-AI
 
-Contexta AI is a GenAI-powered tool that helps students, researchers, and professionals understand research papers faster using natural language queries and intelligent summarization. It combines Retrieval-Augmented Generation (RAG) with Large Language Models (LLMs) to provide comprehensive document analysis and interactive learning.
+Contexta-AI is a document Q and A and insights platform built with FastAPI + React. You can upload documents, ask grounded questions, extract terminology, generate insights, and monitor runtime metrics.
 
----
+Last updated: April 10, 2026.
 
-## Overview
-
-Contexta AI leverages advanced NLP and machine learning to allow users to:
-
-- Upload research papers in PDF format
-- Ask questions in plain English and receive intelligent answers
-- Generate one-line summaries and key insights
-- Extract and define technical terminology from documents
-- Listen to answers via text-to-speech synthesis
-
----
-
-## Features
-
-- PDF document upload and processing
-- Natural language question answering about paper content
-- Comprehensive paper summarization
-- One-line summary generation for quick overview
-- Key insight extraction and analysis
-- Technical term definition and explanation
-- Text-to-speech functionality for audio output
-- Interactive web-based user interface
-- Real-time document processing and retrieval
-
----
-
-## Technology Stack
+## What This Project Uses
 
 ### Backend
 
-- **Language**: Python 3.x
-- **LLM Provider**: Groq API (Llama 3.3-70b-versatile model)
-- **RAG Framework**: LangChain
-- **Vector Database**: FAISS (CPU-based)
-- **Text Embeddings**: sentence-transformers (all-MiniLM-L6-v2)
-- **PDF Processing**: PyPDF2, LangChain PyPDFLoader
-- **Text-to-Speech**: pyttsx3
-- **API Framework**: FastAPI
-- **Environment Management**: python-dotenv
+- Python 3.10+
+- FastAPI + Uvicorn
+- LangChain
+- FAISS vector store (default) with optional Qdrant backend
+- Sentence Transformers embeddings
+- Optional reranker (CrossEncoder)
+- Ollama local LLM support (current default flow in this repo)
+- Optional Groq support
+- Prometheus metrics
+- Optional Redis + RQ for async jobs and distributed rate limiting
+- JWT + legacy auth modes with namespace isolation
 
 ### Frontend
 
-- **Framework**: React 18.2.0
-- **Build Tool**: Vite 5.0.8
-- **Routing**: React Router v7
-- **HTTP Client**: Axios
-- **Animation**: Framer Motion
-- **Styling**: CSS with Tailwind configuration
+- React 18
+- Vite 5
+- React Router
+- Axios
+- Framer Motion
+- Tailwind CSS
 
-### Database
+### Key Python Dependencies
 
-- **Vector Storage**: FAISS with persistent local storage
-- **Embedding Model**: Hugging Face sentence-transformers
+- `fastapi`, `uvicorn`, `python-dotenv`
+- `langchain`, `langchain-community`, `langchain-ollama`, `langchain-groq`, `langchain-google-genai`
+- `faiss-cpu`, `sentence-transformers`, `langchain-huggingface`
+- `redis`, `rq`, `PyJWT`
+- `prometheus-client`, `opentelemetry-*`
 
----
+## Core Features
 
-## Project Structure
+- Multi-format upload: `.pdf`, `.docx`, `.txt`, `.html`, `.htm`
+- Namespace-aware retrieval and answers
+- Grounded Q and A with source snippets
+- Term definition and per-document insights
+- Async ingestion and metrics jobs
+- Observability endpoints for metrics and runtime status
+- Optional GPU and remote DGX helper scripts
 
-````
-Contexta AI/
-├── backend/
-│   ├── main.py                 # FastAPI application and routes
-│   ├── rag_pipeline.py         # RAG implementation and LLM integration
-│   ├── requirements.txt        # Python dependencies
-│   └── uploaded_docs/          # Directory for uploaded PDF files
-├── frontend/
-│   ├── src/
-│   │   ├── components/         # React components (ChatWindow, Sidebar, etc.)
-│   │   ├── pages/              # Application pages (Home, Chat, About, Insights)
-│   │   ├── services/           # API service calls
-│   │   ├── context/            # React context for state management
-│   │   ├── App.jsx             # Main React component
-│   │   └── main.jsx            # React entry point
-│   ├── package.json            # Frontend dependencies
-│   ├── vite.config.js          # Vite configuration
-│   └── index.html              # HTML entry point
-├── vector_store/               # FAISS vector database storage
-├── README.md                   # Project documentation
-├── LICENSE                     # License information
-└── .gitignore                  # Git ignore rules
+## Project Layout
 
----
+```text
+Contexta-AI/
+  main.py
+  rag_pipeline.py
+  requirements.txt
+  .env
+  core/
+    auth.py
+    rate_limiter.py
+    task_queue.py
+    faiss_integrity.py
+    tracing.py
+  frontend/
+    package.json
+    vite.config.js
+    src/
+  tests/
+  observability/prometheus/contexta-alerts.yml
+  start_with_gpu.ps1
+  start_on_dgx.ps1
+  gpu_health_check.py
+```
 
-## Installation and Setup
+## Quick Start
 
-### Prerequisites
-- Python 3.8 or higher
-- Node.js 16.x or higher
-- npm or yarn package manager
-- Groq API key
+### 1. Backend Setup
 
-### Backend Setup
-
-1. Clone the repository:
 ```bash
-git clone https://github.com/Srivardhan04/Contexta-AI.git
-cd Contexta-AI
+python -m venv .venv
+```
 
+Windows:
 
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
+macOS/Linux:
 
-2. Navigate to project directory and create virtual environment:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-````
+source .venv/bin/activate
+```
 
-3. Install Python dependencies:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Create environment configuration file (.env):
+### 2. Configure Environment
 
-```bash
-# Create .env file in project root
-echo GROQ_API_KEY=your_groq_api_key_here > .env
-```
+Edit `.env` in repo root.
 
-Note: Obtain your Groq API key from https://console.groq.com
+Recommended hybrid mode (Ollama 3B + Gemini):
 
-### Optional GPU Setup
-
-Contexta now auto-selects CUDA for embeddings and reranking when available.
-
-1. Add/update these variables in `.env`:
-
-```bash
-GPU_ENABLED=true
-GPU_DEVICE_ID=0
-EMBEDDING_DEVICE=auto
-RERANKER_DEVICE=auto
-
-# Embeddings/reranker quality upgrades
-EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
-RERANKER_MODEL=BAAI/bge-reranker-large
-RERANKER_BATCH_SIZE=32
-
-# Local LLM path (Ollama) with Groq fallback
-LLM_PROVIDER=auto
+```env
+LLM_PROVIDER=hybrid
 OLLAMA_ENABLED=true
-OLLAMA_MODEL=llama3:8b
+OLLAMA_MODEL=llama3.2:3b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-1.5-flash
+# Optional: fail fast if either provider is unavailable
+# HYBRID_REQUIRE_BOTH=true
 ```
 
-2. Run the GPU health check:
+Ollama-only mode is still supported by setting:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_ENABLED=true
+OLLAMA_REQUIRED=true
+```
+
+### 3. Start Ollama
+
+```bash
+ollama pull llama3.2:3b
+ollama serve
+```
+
+### 4. Start Backend API
+
+```bash
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### 5. Start Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend default URL: `http://localhost:5173`
+
+## Frontend API Proxy
+
+Vite proxies `/api/*` to backend.
+
+Default proxy target:
+
+- `http://127.0.0.1:8000`
+
+Optional frontend env:
+
+- `VITE_API_PROXY_TARGET`
+- `VITE_CLIENT_KEY`
+
+If backend is not running, Vite will log `ECONNREFUSED` for API calls.
+
+## API Endpoints
+
+Auth:
+
+- `POST /auth/refresh`
+- `POST /auth/revoke`
+
+Index and upload:
+
+- `GET /index-status`
+- `POST /upload-paper`
+- `POST /upload-papers`
+- `DELETE /reset-index`
+
+Q and A:
+
+- `POST /ask-question`
+- `POST /define-term`
+- `GET /insights`
+- `GET /metrics`
+
+Async jobs:
+
+- `GET /jobs/{job_id}`
+
+Observability:
+
+- `GET /observability/metrics`
+- `GET /observability/status`
+
+## Auth and Namespace Model
+
+The API resolves caller namespace through `AuthManager`.
+
+Supported patterns:
+
+- JWT mode (`AUTH_MODE=jwt`)
+- Legacy key mapping (`CLIENT_NAMESPACE_MAP` + `X-Client-Key`)
+- Hybrid mode (`AUTH_MODE=hybrid`)
+
+Role checks are enforced for endpoint policy, especially in JWT mode.
+
+## Async Jobs and Queue
+
+By default, jobs can run locally in-process.
+
+Optional distributed mode:
+
+- Set `TASK_QUEUE_BACKEND=rq`
+- Provide `REDIS_URL`
+- Run an RQ worker for your queue name
+
+Related settings:
+
+- `TASK_QUEUE_REQUIRED`
+- `TASK_QUEUE_NAME`
+- `TASK_QUEUE_JOB_TIMEOUT_SECONDS`
+- `TASK_QUEUE_RETRY_MAX`
+
+## Performance Tuning
+
+Current low-latency settings in this repo include:
+
+- `RERANKER_ENABLED=false`
+- `FAST_QUERY_MODE=true`
+- `FAST_QUERY_TERM_THRESHOLD=12`
+- `MAX_CONTEXT_DOCS=4`
+
+Ollama speed knobs:
+
+- `OLLAMA_NUM_CTX`
+- `OLLAMA_NUM_PREDICT`
+- `OLLAMA_NUM_THREAD`
+- `OLLAMA_KEEP_ALIVE`
+- `OLLAMA_NUM_GPU`
+
+If answers are slow, confirm actual runtime mode:
+
+```bash
+ollama ps
+```
+
+Check `PROCESSOR` field for CPU vs GPU.
+
+## GPU and DGX Helpers
+
+Local GPU diagnostics:
 
 ```bash
 python gpu_health_check.py
 ```
 
-3. Start backend with environment bootstrapping (Windows PowerShell):
+Windows helper script:
 
 ```powershell
 .\start_with_gpu.ps1
 ```
 
-Notes:
+Remote DGX helper script:
 
-- If CUDA is available, runtime device resolves to `cuda:<GPU_DEVICE_ID>`.
-- If CUDA is unavailable, Contexta falls back safely to CPU.
-- DGX SSH reachability is checked by `gpu_health_check.py` when `GPU_ENABLED=true` and DGX fields are set.
-- With `OLLAMA_ENABLED=true`, Contexta tries local Ollama first and falls back to Groq if local model is unavailable.
-
-### Frontend Setup
-
-1. Navigate to frontend directory:
-
-```bash
-cd frontend
+```powershell
+.\start_on_dgx.ps1
 ```
 
-2. Install dependencies:
+## Testing
+
+Run all default tests:
 
 ```bash
-npm install
+pytest
 ```
 
-3. Start development server:
+Markers configured:
+
+- `e2e`
+- `stress`
+
+Example:
 
 ```bash
-npm run dev
+pytest -m "not e2e and not stress"
 ```
-
-The frontend will be available at http://localhost:5173
-
----
-
-## Running the Application
-
-### Start Backend Server
-
-From project root:
-
-```bash
-python main.py
-```
-
-The FastAPI server will start on http://localhost:8000
-
-### API Endpoints
-
-- **POST** /upload-paper: Upload PDF document for processing
-- **POST** /ask-question: Ask questions about uploaded document
-- **GET** /health: Health check endpoint
-
-### Start Frontend Application
-
-```bash
-cd frontend
-npm run dev
-```
-
----
-
-## Usage Guide
-
-1. Open the application in your browser (http://localhost:5173)
-2. Upload a research paper in PDF format using the upload panel
-3. Wait for document processing and embedding generation
-4. Ask questions about the paper content
-5. Receive AI-generated answers with source references
-6. Use features like one-line summary, insights, and term definitions
-
----
-
-## API Configuration
-
-The application requires a Groq API key for LLM functionality:
-
-1. Sign up at https://console.groq.com
-2. Generate an API key
-3. Add to .env file: GROQ_API_KEY=your_key
-4. Restart the backend server
-
----
-
-## Observability: Tracing and Alerts
-
-Contexta now includes optional distributed tracing and ready-to-use Prometheus alert rules.
-
-### Distributed Tracing (OpenTelemetry + OTLP)
-
-Set these environment variables:
-
-```bash
-TRACING_ENABLED=true
-TRACING_EXPORTER=otlp
-OTEL_SERVICE_NAME=contexta-api
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
-```
-
-When enabled, each HTTP request is emitted as a trace span with request ID, route, status, and namespace attributes.
-
-### Alert Rules
-
-Prometheus alert rule file is included at:
-
-- `observability/prometheus/contexta-alerts.yml`
-
-Included baseline alerts:
-
-- High 5xx error ratio
-- High p95 latency
-- Sustained HTTP 429 pressure
-- No-traffic signal
-
-### Observability Readiness Endpoint
-
-Use this endpoint to verify backend status at runtime:
-
-- `GET /observability/status`
-
-It reports tracing exporter state, queue backend readiness, and rate-limit backend readiness.
-
----
-
-## Tenant Isolation Controls
-
-Contexta now supports deployment-level tenant pinning to enforce hard boundaries in shared runtime environments.
-
-Set:
-
-```bash
-DEPLOYMENT_TENANT_ID=tenant-a
-JWT_TENANT_CLAIM=tenant_id
-```
-
-Behavior:
-
-- JWT mode: token tenant claim must match `DEPLOYMENT_TENANT_ID`, or request is denied.
-- Legacy key mode: resolved tenant identity must match `DEPLOYMENT_TENANT_ID`, or request is denied.
-
-This lets you run one deployment per tenant with isolated storage/queue configs for stronger data-plane separation.
-
----
-
-## Important Notes
-
-- Keep .env file secure and never commit to version control
-- FAISS vector store is saved locally for persistence
-- Document embeddings are cached for faster retrieval
-- Text-to-speech requires system audio output
-- Supports PDF files up to 50MB in size
-
----
 
 ## Troubleshooting
 
-**"No PDF has been processed yet" error**
+### Frontend shows proxy errors
 
-- Ensure a PDF file has been successfully uploaded and processed
-- Check vector_store directory exists and contains FAISS files
+Symptom:
 
-**CORS errors from frontend**
+- `http proxy error ... ECONNREFUSED 127.0.0.1:8000`
 
-- Verify backend is running on http://localhost:8000
-- Check CORS configuration in main.py matches frontend origin
+Fix:
 
-**PDF upload fails**
+- Start backend on port 8000.
+- Verify `frontend/vite.config.js` proxy target.
 
-- Ensure file is valid PDF format
-- Check uploaded_docs directory has write permissions
-- Verify file size is under 50MB
+### Ollama answers fail
 
-**API key errors**
+Check:
 
-- Confirm GROQ_API_KEY is set in .env file
-- Verify API key is valid and has active quota
-- Restart backend after changing .env file
+- `ollama serve` is running.
+- Model is pulled (`ollama pull llama3.2:3b`).
+- `OLLAMA_BASE_URL` is reachable.
 
----
+### Wrong or verbose answers
 
-## Project Roadmap
+Tune:
 
-- Multi-document analysis and comparisons
-- Advanced search filters and sorting
-- Custom prompt templates
-- Document annotation features
-- Export summary to PDF
-- Collaborative sharing features
-- API rate limiting and user authentication
-- Support for multiple document formats
+- lower `MAX_CONTEXT_DOCS`
+- keep reranker off for speed
+- keep question short and specific
 
----
+## Security Note
+
+Do not commit secrets from `.env`.
+
+Rotate keys if credentials are ever exposed.
 
 ## License
 
-This project is licensed under the MIT License. See LICENSE file for details.
-
----
-
-## Contributors
-
-Developed by Srivardhan and the Contexta AI team.
-
-For questions or issues, please open an issue on GitHub repository.
+MIT

@@ -101,11 +101,18 @@ set -e
 cd '$($env:DGX_PROJECT_PATH)'
 . .venv/bin/activate
 if [ -f .env ]; then
-  set -a
-  tr -d '\r' < ./.env > ./.env.lf
-  . ./.env.lf
-  rm -f ./.env.lf
-  set +a
+  while IFS= read -r line || [ -n "`$line" ]; do
+    case "`$line" in
+      ''|\#*) continue ;;
+    esac
+    key="`${line%%=*}"
+    value="`${line#*=}"
+    key="`$(printf '%s' "`$key" | tr -d ' \r')"
+    value="`${value%`$'\r'}"
+    if [ -n "`$key" ]; then
+      export "`$key=`$value"
+    fi
+  done < .env
 fi
 export GPU_ENABLED=true
 export GPU_DEVICE_ID='$($env:GPU_DEVICE_ID)'
@@ -113,6 +120,13 @@ export EMBEDDING_DEVICE=auto
 export RERANKER_DEVICE=auto
 export CUDA_VISIBLE_DEVICES='$($env:GPU_DEVICE_ID)'
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export OLLAMA_NUM_GPU='99'
+export OLLAMA_GPU_ONLY='true'
+export OLLAMA_LLM_LIBRARY='cuda'
+export OLLAMA_HOST='127.0.0.1:11435'
+pkill -u "`$(whoami)" -f "ollama serve" >/dev/null 2>&1 || true
+nohup env OLLAMA_HOST="`$OLLAMA_HOST" OLLAMA_LLM_LIBRARY="`$OLLAMA_LLM_LIBRARY" OLLAMA_NUM_GPU="`$OLLAMA_NUM_GPU" ollama serve >/tmp/contexta_ollama.log 2>&1 &
+export OLLAMA_BASE_URL='http://127.0.0.1:11435'
 python main.py
 "@
 

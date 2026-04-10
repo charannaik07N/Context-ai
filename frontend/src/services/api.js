@@ -4,6 +4,10 @@ const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
 const configuredBackendUrl = (import.meta.env.VITE_BACKEND_URL || "").trim();
 const defaultBackendUrl = "http://127.0.0.1:8000";
 const DEFAULT_TIMEOUT_MS = 60000;
+const ASK_TIMEOUT_MS = Number(import.meta.env.VITE_ASK_TIMEOUT_MS || 180000);
+const INSIGHTS_TIMEOUT_MS = Number(
+  import.meta.env.VITE_INSIGHTS_TIMEOUT_MS || 240000,
+);
 
 const unique = (arr) => [...new Set(arr.filter(Boolean))];
 const stripTrailingSlash = (value) => value.replace(/\/+$/, "");
@@ -19,7 +23,20 @@ const API_BASE_CANDIDATES = unique([
 
 const authHeaders = () => {
   const headers = {};
-  const clientKey = import.meta.env.VITE_CLIENT_KEY;
+  let clientKey = import.meta.env.VITE_CLIENT_KEY;
+
+  if (!clientKey && typeof window !== "undefined") {
+    const storageKey = "contexta_client_key";
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing && existing.trim()) {
+      clientKey = existing.trim();
+    } else {
+      const generated = `web-${Math.random().toString(36).slice(2, 12)}`;
+      window.localStorage.setItem(storageKey, generated);
+      clientKey = generated;
+    }
+  }
+
   if (clientKey) {
     headers["X-Client-Key"] = clientKey;
   }
@@ -44,10 +61,17 @@ const shouldTryNextBase = (error) => {
   }
   const status = error?.response?.status;
 
-  // Retry on route-level 404 only. Semantic API 404 responses should be surfaced directly.
+  // Retry on route-level 404s. Semantic API 404 responses should be surfaced directly.
   if (status === 404) {
     const detail = error?.response?.data?.detail;
-    return detail === "Not Found";
+
+    // If there is a specific backend detail, surface it directly.
+    if (typeof detail === "string" && detail.trim() && detail !== "Not Found") {
+      return false;
+    }
+
+    // Proxy/SPA 404s can come with HTML or non-JSON payloads. Try next base.
+    return true;
   }
 
   // 502/503/504: proxy/backend bridge failure.
@@ -113,6 +137,7 @@ export const askQuestion = async (question) => {
     "/ask-question",
     { question },
     {
+      timeout: ASK_TIMEOUT_MS,
       headers: authHeaders(),
     },
   );
@@ -133,6 +158,7 @@ export const defineTerm = async (term) => {
 /* ================= INSIGHTS ================= */
 export const getInsights = async () => {
   return requestWithFallback("get", "/insights", undefined, {
+    timeout: INSIGHTS_TIMEOUT_MS,
     headers: authHeaders(),
   });
 };

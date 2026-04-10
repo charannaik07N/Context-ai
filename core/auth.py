@@ -317,8 +317,9 @@ class AuthManager:
         return []
 
     def _resolve_legacy_namespace(self, request) -> tuple[str, str, list[str], str]:
+        client_key = (request.headers.get("X-Client-Key") or "").strip()
+
         if self.client_namespace_map:
-            client_key = (request.headers.get("X-Client-Key") or "").strip()
             if not client_key:
                 raise PermissionError("Missing X-Client-Key for namespace-bound access.")
             mapped = self.client_namespace_map.get(client_key)
@@ -326,6 +327,17 @@ class AuthManager:
                 raise PermissionError("Invalid client key.")
             tenant = self._sanitize_namespace(mapped)
             return tenant, mapped, ["legacy"], f"client:{client_key}"
+
+        # When no static map is configured, still honor a caller-provided client key
+        # so browsers/proxies resolve to a stable anonymous namespace.
+        if client_key:
+            digest = hmac.new(
+                self.namespace_signing_key.encode("utf-8"),
+                f"client:{client_key}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:24]
+            resolved = f"anon-{digest}"
+            return resolved, resolved, ["anonymous"], f"client:{client_key}"
 
         client_host = request.client.host if request.client else "unknown"
         user_agent = request.headers.get("user-agent", "")

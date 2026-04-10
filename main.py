@@ -23,8 +23,10 @@ from core.rate_limiter import HybridRateLimiter
 from core.auth import AuthManager, require_roles
 from core.tracing import initialize_tracing, get_tracer, get_tracing_state
 from worker_tasks import process_single_upload_task, process_batch_upload_task, compute_metrics_task
+from core.gpu_runtime import configure_gpu_environment
 
 load_dotenv(override=True)
+configure_gpu_environment()
 
 from rag_pipeline import (
     ask_question,
@@ -41,9 +43,10 @@ from rag_pipeline import (
 
 # ================= STARTUP VALIDATION =================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 LLM_PROVIDER = (os.getenv("LLM_PROVIDER") or "auto").strip().lower()
 OLLAMA_ENABLED = (os.getenv("OLLAMA_ENABLED", "false").strip().lower() == "true")
-if not GROQ_API_KEY and not (LLM_PROVIDER in {"ollama", "extractive"} or OLLAMA_ENABLED):
+if not GROQ_API_KEY and not GEMINI_API_KEY and not (LLM_PROVIDER in {"ollama", "extractive", "gemini", "hybrid"} or OLLAMA_ENABLED):
     logging.warning(
         "GROQ_API_KEY is not set. Running in fallback mode (extractive answers only)."
     )
@@ -146,7 +149,7 @@ async def observability_middleware(request: Request, call_next):
     return response
 
 # ================= CORS =================
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
@@ -890,7 +893,10 @@ def get_insights(request: Request):
 
     docs = generate_insights_by_document(namespace=namespace)
     if not docs:
-        raise HTTPException(status_code=500, detail="No document insights could be generated.")
+        raise HTTPException(
+            status_code=404,
+            detail="No retrievable PDF document context found for insights. Upload a PDF and try again.",
+        )
 
     return {
         "namespace": namespace,

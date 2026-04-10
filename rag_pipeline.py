@@ -10,6 +10,8 @@ import io
 import warnings
 import tempfile
 import uuid
+import subprocess
+import urllib.request
 import numpy as np
 from contextlib import contextmanager
 from contextlib import redirect_stdout, redirect_stderr
@@ -26,9 +28,16 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 try:
-    from langchain_community.chat_models import ChatOllama
+    from langchain_ollama import ChatOllama
 except Exception:  # pragma: no cover - optional dependency/runtime
-    ChatOllama = None
+    try:
+        from langchain_community.chat_models import ChatOllama
+    except Exception:  # pragma: no cover - optional dependency/runtime
+        ChatOllama = None
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency/runtime
+    ChatGoogleGenerativeAI = None
 from sentence_transformers import CrossEncoder
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
@@ -64,9 +73,23 @@ GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "120"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
 OLLAMA_ENABLED = (os.getenv("OLLAMA_ENABLED", "false").strip().lower() == "true")
 OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
-OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or "llama3:8b").strip()
+OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or "llama3.2:3b").strip()
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0"))
 LOCAL_LLM_TIMEOUT_SECONDS = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "120"))
+OLLAMA_KEEP_ALIVE = (os.getenv("OLLAMA_KEEP_ALIVE") or "30m").strip()
+OLLAMA_NUM_CTX = max(256, int(os.getenv("OLLAMA_NUM_CTX", "1024")))
+OLLAMA_NUM_PREDICT = max(32, int(os.getenv("OLLAMA_NUM_PREDICT", "80")))
+OLLAMA_NUM_THREAD = max(0, int(os.getenv("OLLAMA_NUM_THREAD", "0")))
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
+OLLAMA_GPU_ONLY = (os.getenv("OLLAMA_GPU_ONLY", "false").strip().lower() == "true")
+OLLAMA_REQUIRED = (os.getenv("OLLAMA_REQUIRED", "false").strip().lower() == "true") or LLM_PROVIDER == "ollama"
+GEMINI_API_KEY = ((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or "gemini-1.5-flash").strip()
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0"))
+GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "256"))
+GEMINI_REQUIRED = (os.getenv("GEMINI_REQUIRED", "false").strip().lower() == "true") or LLM_PROVIDER == "gemini"
+HYBRID_REQUIRE_BOTH = (os.getenv("HYBRID_REQUIRE_BOTH", "false").strip().lower() == "true")
+HYBRID_PREFERRED_PROVIDER = (os.getenv("HYBRID_PREFERRED_PROVIDER") or "ollama").strip().lower()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 INDEX_INTEGRITY_KEY = (os.getenv("INDEX_INTEGRITY_KEY") or "").strip()
 VECTOR_BACKEND = (os.getenv("VECTOR_BACKEND", "faiss") or "faiss").strip().lower()
@@ -80,8 +103,15 @@ EMBEDDING_DEVICE = (os.getenv("EMBEDDING_DEVICE") or "auto").strip().lower()
 RERANKER_DEVICE = (os.getenv("RERANKER_DEVICE") or "auto").strip().lower()
 EMBEDDING_MODEL = (os.getenv("EMBEDDING_MODEL") or "sentence-transformers/all-MiniLM-L6-v2").strip()
 RERANKER_MODEL = (os.getenv("RERANKER_MODEL") or "cross-encoder/ms-marco-MiniLM-L-6-v2").strip()
+RERANKER_ENABLED = (os.getenv("RERANKER_ENABLED", "true").strip().lower() == "true")
 RERANKER_MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
 RERANKER_BATCH_SIZE = max(1, int(os.getenv("RERANKER_BATCH_SIZE", "24")))
+FAST_QUERY_MODE = (os.getenv("FAST_QUERY_MODE", "false").strip().lower() == "true")
+FAST_QUERY_TERM_THRESHOLD = max(3, int(os.getenv("FAST_QUERY_TERM_THRESHOLD", "8")))
+MAX_CONTEXT_DOCS = max(2, int(os.getenv("MAX_CONTEXT_DOCS", "6")))
+RETRIEVAL_THRESHOLD_ENABLED = (os.getenv("RETRIEVAL_THRESHOLD_ENABLED", "true").strip().lower() == "true")
+RETRIEVAL_MIN_SCORE = float(os.getenv("RETRIEVAL_MIN_SCORE", "0.75"))
+STRUCTURED_FIELD_FALLBACK_ENABLED = (os.getenv("STRUCTURED_FIELD_FALLBACK_ENABLED", "true").strip().lower() == "true")
 
 # Keep runtime logs clean by muting non-actionable model-load chatter.
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
@@ -97,6 +127,8 @@ warnings.filterwarnings(
 _embedding_model = None
 _reranker = None
 _llm = None
+_ollama_llm = None
+_gemini_llm = None
 
 QUERY_CACHE_TTL_SECONDS = int(os.getenv("QUERY_CACHE_TTL_SECONDS", "180"))
 QUERY_CACHE_MAX_ENTRIES = int(os.getenv("QUERY_CACHE_MAX_ENTRIES", "200"))
@@ -114,11 +146,91 @@ STORE_LOCK_STALE_SECONDS = float(os.getenv("STORE_LOCK_STALE_SECONDS", "300"))
 STORE_LOCK_BACKEND = os.getenv("STORE_LOCK_BACKEND", "auto").strip().lower()
 STORE_LOCK_REDIS_REQUIRED = (os.getenv("STORE_LOCK_REDIS_REQUIRED", "false").strip().lower() == "true")
 STORE_LOCK_REDIS_KEY_PREFIX = (os.getenv("STORE_LOCK_REDIS_KEY_PREFIX") or "contexta:storelock").strip()
+RETRIEVAL_PDF_ONLY = (os.getenv("RETRIEVAL_PDF_ONLY", "true").strip().lower() == "true")
+DIRECT_QA_OVERRIDE_ENABLED = (os.getenv("DIRECT_QA_OVERRIDE_ENABLED", "false").strip().lower() == "true")
+DATASET_VALIDATION_ENABLED = (os.getenv("DATASET_VALIDATION_ENABLED", "false").strip().lower() == "true")
+DATASET_SIMILARITY_THRESHOLD = float(os.getenv("DATASET_SIMILARITY_THRESHOLD", "0.80"))
+INSIGHTS_MAX_SOURCES = max(1, int(os.getenv("INSIGHTS_MAX_SOURCES", "3")))
+INSIGHTS_ALLOW_PARTIAL_HYBRID = (os.getenv("INSIGHTS_ALLOW_PARTIAL_HYBRID", "true").strip().lower() == "true")
+DATASET_REFERENCE_PATH = Path(
+    os.getenv(
+        "DATASET_REFERENCE_PATH",
+        str(BASE_DIR / "training_data" / "limitations_qa_finetune.jsonl"),
+    )
+).resolve()
+QA_OVERRIDES_PATH = DATASET_REFERENCE_PATH
+ANSWER_NOT_FOUND_TEXT = (os.getenv("ANSWER_NOT_FOUND_TEXT") or "Not found in document").strip()
 _query_result_cache: dict[tuple[str, str, int, str], tuple[float, dict]] = {}
 _query_cache_lock = Lock()
 _store_lock_guard = Lock()
 _store_lock_counts: dict[str, int] = {}
 _qdrant_client_singleton = None
+_qa_overrides_cache: dict[str, dict[str, str]] = {}
+_qa_overrides_mtime: float | None = None
+_dataset_context_cache: list[str] = []
+_dataset_context_embeddings: np.ndarray | None = None
+_dataset_context_mtime: float | None = None
+
+SYSTEM_PROMPT_TEMPLATE = """You are a highly accurate document question-answering system.
+
+STRICT RULES:
+1. Answer ONLY using the provided context.
+2. Do NOT use prior knowledge.
+3. If the answer is not explicitly present in the context, respond EXACTLY with:
+    \"Not found in document\"
+4. Do NOT guess, assume, or hallucinate.
+5. Keep answers concise, factual, and precise.
+6. If multiple sources exist, prioritize the most relevant and recent.
+7. If the context is insufficient or unclear, say you don't know.
+
+ANSWER FORMAT:
+- Direct answer only
+- No explanations unless explicitly asked
+- No extra text
+- No assumptions
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+FINAL ANSWER:"""
+
+USER_PROMPT_TEMPLATE = """Answer the question using ONLY the given context.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Rules:
+- Only use the context
+- If answer not found -> say \"Not found in document\"
+- Do not explain extra
+
+Answer:"""
+
+STRICT_GROUNDED_PROMPT_TEMPLATE = """You must behave as a strict retrieval-based QA system.
+
+CRITICAL:
+- If the exact answer is NOT in the context -> DO NOT answer.
+- DO NOT infer, summarize beyond text, or guess.
+- DO NOT complete partial information.
+
+If answer is missing -> respond EXACTLY:
+\"Not found in document\"
+
+Never break this rule.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
 
 
 def _detect_cuda_available() -> bool:
@@ -200,6 +312,244 @@ GROUNDING_STOPWORDS = {
 def _normalize_query(question: str) -> str:
     """Normalize user query so equivalent text maps to a single cache key."""
     return " ".join((question or "").split()).strip().lower()
+
+
+def _is_allowed_retrieval_source_name(source_name: str) -> bool:
+    """Return True when the source is eligible for retrieval context."""
+    name = Path(str(source_name or "")).name.lower().strip()
+    if not name:
+        return False
+
+    # Never retrieve from local QA seed/training artifacts.
+    if name in {"limitations_qa_seed.txt", "limitations_qa_finetune.jsonl"}:
+        return False
+
+    if RETRIEVAL_PDF_ONLY and not name.endswith(".pdf"):
+        return False
+
+    return True
+
+
+def _doc_is_allowed_for_retrieval(doc: Document) -> bool:
+    metadata = doc.metadata or {}
+    source_name = str(metadata.get("source", "")).strip()
+    return _is_allowed_retrieval_source_name(source_name)
+
+
+def _same_source_name(a: str, b: str) -> bool:
+    """Compare source names using basename semantics."""
+    return Path(str(a or "")).name.lower().strip() == Path(str(b or "")).name.lower().strip()
+
+
+def _load_qa_overrides() -> dict[str, dict[str, str]]:
+    """Load optional exact-match QA overrides from JSONL for deterministic answers."""
+    global _qa_overrides_cache, _qa_overrides_mtime
+
+    try:
+        if not QA_OVERRIDES_PATH.exists():
+            _qa_overrides_cache = {}
+            _qa_overrides_mtime = None
+            return _qa_overrides_cache
+
+        mtime = QA_OVERRIDES_PATH.stat().st_mtime
+        if _qa_overrides_mtime is not None and _qa_overrides_mtime == mtime:
+            return _qa_overrides_cache
+
+        overrides: dict[str, dict[str, str]] = {}
+        with open(QA_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+
+                question = str(row.get("question", "")).strip()
+                answer = str(row.get("answer", row.get("output", ""))).strip()
+                context = str(row.get("context", "")).strip()
+
+                if not question:
+                    input_text = str(row.get("input", "")).strip()
+                    if input_text:
+                        q_match = re.search(r"Question\s*:\s*(.+)$", input_text, re.IGNORECASE)
+                        if q_match:
+                            question = q_match.group(1).strip()
+
+                        c_match = re.search(r"Context\s*:\s*(.*?)\s*Question\s*:", input_text, re.IGNORECASE | re.DOTALL)
+                        if c_match and not context:
+                            context = " ".join(c_match.group(1).split()).strip()
+
+                if not question or not answer:
+                    continue
+
+                overrides[_normalize_query(question)] = {
+                    "answer": answer,
+                    "context": context,
+                }
+
+        _qa_overrides_cache = overrides
+        _qa_overrides_mtime = mtime
+        return _qa_overrides_cache
+    except Exception:
+        return _qa_overrides_cache
+
+
+def _lookup_qa_override(question: str) -> dict | None:
+    """Return deterministic answer when question exactly matches override dataset."""
+    if not DIRECT_QA_OVERRIDE_ENABLED:
+        return None
+
+    normalized = _normalize_query(question)
+    if not normalized:
+        return None
+
+    entry = _load_qa_overrides().get(normalized)
+    if not entry:
+        return None
+
+    answer = str(entry.get("answer", "")).strip()
+    if not answer:
+        return None
+
+    snippet = " ".join((entry.get("context") or answer).split())[:220]
+    source_name = "limitations_qa_seed.txt"
+    return {
+        "answer": answer,
+        "sources": [
+            {
+                "source": source_name,
+                "file": source_name,
+                "snippet": snippet,
+            }
+        ],
+    }
+
+
+def _extract_dataset_context_from_row(row: dict) -> str:
+    """Extract canonical context text from a dataset row."""
+    context = " ".join(str(row.get("context", "")).split()).strip()
+    if context:
+        return context
+
+    input_text = str(row.get("input", "")).strip()
+    if not input_text:
+        return ""
+
+    m = re.search(
+        r"Context\s*:\s*(.*?)\s*Question\s*:",
+        input_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return ""
+    return " ".join(m.group(1).split()).strip()
+
+
+def _normalize_embedding_matrix(values: list[list[float]] | np.ndarray) -> np.ndarray:
+    """Convert embeddings to row-normalized float32 matrix for cosine similarity."""
+    matrix = np.asarray(values, dtype=np.float32)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(1, -1)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    return matrix / norms
+
+
+def _load_dataset_reference_context_matrix() -> tuple[list[str], np.ndarray | None]:
+    """Load dataset reference contexts and precomputed embedding matrix."""
+    global _dataset_context_cache, _dataset_context_embeddings, _dataset_context_mtime
+
+    if not DATASET_VALIDATION_ENABLED:
+        return [], None
+
+    try:
+        if not DATASET_REFERENCE_PATH.exists():
+            _dataset_context_cache = []
+            _dataset_context_embeddings = None
+            _dataset_context_mtime = None
+            return [], None
+
+        mtime = DATASET_REFERENCE_PATH.stat().st_mtime
+        if _dataset_context_mtime is not None and _dataset_context_mtime == mtime:
+            return _dataset_context_cache, _dataset_context_embeddings
+
+        contexts: list[str] = []
+        seen = set()
+        with open(DATASET_REFERENCE_PATH, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+
+                context = _extract_dataset_context_from_row(row)
+                if not context:
+                    continue
+                key = context.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                contexts.append(context)
+
+        if not contexts:
+            _dataset_context_cache = []
+            _dataset_context_embeddings = None
+            _dataset_context_mtime = mtime
+            return [], None
+
+        embeddings = get_embedding_model().embed_documents(contexts)
+        matrix = _normalize_embedding_matrix(embeddings)
+
+        _dataset_context_cache = contexts
+        _dataset_context_embeddings = matrix
+        _dataset_context_mtime = mtime
+        return contexts, matrix
+    except Exception:
+        return _dataset_context_cache, _dataset_context_embeddings
+
+
+def _filter_docs_by_dataset_similarity(docs: list[Document]) -> list[Document]:
+    """Keep only retrieved docs whose semantic similarity to dataset contexts exceeds threshold."""
+    if not DATASET_VALIDATION_ENABLED:
+        return docs
+    if not docs:
+        return []
+
+    _, context_matrix = _load_dataset_reference_context_matrix()
+    if context_matrix is None or context_matrix.size == 0:
+        return []
+
+    valid_docs: list[Document] = []
+    texts: list[str] = []
+    for doc in docs:
+        text = " ".join((doc.page_content or "").split()).strip()
+        if not text:
+            continue
+        valid_docs.append(doc)
+        texts.append(text)
+
+    if not texts:
+        return []
+
+    doc_matrix = _normalize_embedding_matrix(get_embedding_model().embed_documents(texts))
+    similarity = np.matmul(doc_matrix, context_matrix.T)
+
+    kept: list[Document] = []
+    for idx, doc in enumerate(valid_docs):
+        best = float(np.max(similarity[idx])) if similarity.shape[1] > 0 else 0.0
+        doc.metadata = dict(doc.metadata or {})
+        doc.metadata["dataset_similarity"] = best
+        if best >= DATASET_SIMILARITY_THRESHOLD:
+            kept.append(doc)
+
+    kept.sort(key=lambda d: float((d.metadata or {}).get("dataset_similarity", 0.0)), reverse=True)
+    return kept
 
 
 def _normalize_namespace(namespace: str | None) -> str:
@@ -639,6 +989,8 @@ def _rerank_with_scores(question: str, docs: list) -> list[tuple[float, Document
     """Re-score candidate docs with the cross-encoder and keep scores."""
     if not docs:
         return []
+    if not RERANKER_ENABLED:
+        return [(float(len(docs) - i), doc) for i, doc in enumerate(docs)]
     try:
         reranker = get_reranker()
         pairs = [(question, doc.page_content) for doc in docs]
@@ -999,23 +1351,34 @@ def _build_multi_source_docs(question: str, k_per_source: int = 6, namespace: st
     Falls back to a global search when only one source is tracked.
     """
     vectorstore = _load_vectorstore(namespace=namespace)
-    sources = _load_index_meta(namespace=namespace).get("sources", [])
+    sources = [
+        s
+        for s in _load_index_meta(namespace=namespace).get("sources", [])
+        if _is_allowed_retrieval_source_name(str(s))
+    ]
 
     seen_best: dict[str, tuple[float, Document]] = {}
     q_terms = _content_words(question)
-    short_query_fast_mode = len(q_terms) <= 5 and not _is_count_question(question)
-    global_k = max(12, min(MAX_RERANK_CANDIDATES * (2 if short_query_fast_mode else 4), 48 if short_query_fast_mode else 64))
+    short_query_fast_mode = FAST_QUERY_MODE and len(q_terms) <= FAST_QUERY_TERM_THRESHOLD and not _is_count_question(question)
+    vector_only_mode = short_query_fast_mode or (not RERANKER_ENABLED)
+    if vector_only_mode:
+        global_k = max(10, min(MAX_RERANK_CANDIDATES, 24))
+    else:
+        global_k = max(12, min(MAX_RERANK_CANDIDATES * 4, 64))
 
     # First pass: global candidate retrieval prioritizes pure relevance.
     global_pairs = vectorstore.similarity_search_with_score(question, k=global_k)
     for doc, score in global_pairs:
+        if not _doc_is_allowed_for_retrieval(doc):
+            continue
         uid = doc.metadata.get("chunk_hash", doc.page_content[:80])
         best = seen_best.get(uid)
         if best is None or _score_is_better(float(score), float(best[0])):
-            seen_best[uid] = (score, doc)
+            doc.metadata["vector_score"] = float(score)
+            seen_best[uid] = (float(score), doc)
 
     # Second pass: optional light per-source fallback so smaller docs are not starved.
-    if len(sources) > 1 and not short_query_fast_mode:
+    if len(sources) > 1 and not vector_only_mode:
         per_source_k = max(1, min(2, k_per_source))
         for source in sources:
             try:
@@ -1030,15 +1393,16 @@ def _build_multi_source_docs(question: str, k_per_source: int = 6, namespace: st
                 uid = doc.metadata.get("chunk_hash", doc.page_content[:80])
                 best = seen_best.get(uid)
                 if best is None or _score_is_better(float(score), float(best[0])):
-                    seen_best[uid] = (score, doc)
+                    doc.metadata["vector_score"] = float(score)
+                    seen_best[uid] = (float(score), doc)
 
     candidates = [
         doc
         for _, doc in _sort_pairs_by_score(list(seen_best.values()))[
-            : (min(MAX_RERANK_CANDIDATES, 10) if short_query_fast_mode else MAX_RERANK_CANDIDATES)
+            : (min(MAX_RERANK_CANDIDATES, 10) if vector_only_mode else MAX_RERANK_CANDIDATES)
         ]
     ]
-    if short_query_fast_mode:
+    if vector_only_mode:
         # For short factoid queries, vector ranking is usually sufficient and much faster.
         ranked = [(float(len(candidates) - i), doc) for i, doc in enumerate(candidates)]
     else:
@@ -1066,7 +1430,7 @@ def _build_multi_source_docs(question: str, k_per_source: int = 6, namespace: st
 
     rescored.sort(key=lambda item: (item[0], item[1]), reverse=True)
 
-    max_docs = min(5 if short_query_fast_mode else 8, max(2 if short_query_fast_mode else 3, k_per_source))
+    max_docs = min(MAX_CONTEXT_DOCS, max(2 if vector_only_mode else 3, k_per_source))
     kept = [doc for lexical, score, doc in rescored if score >= RERANK_MIN_SCORE or lexical >= 0.10][:max_docs]
 
     # Ensure a non-empty context even for difficult queries without forcing many weak chunks.
@@ -1085,7 +1449,8 @@ def _recommended_k_per_source(question: str) -> int:
     if len(q_words) >= 10:
         return max(DEFAULT_K_PER_SOURCE, 10)
     if len(q_words) <= 4:
-        return max(6, DEFAULT_K_PER_SOURCE - 1)
+        # Keep short factual queries (e.g., FAISS limitations) from missing sparse chunks.
+        return max(10, DEFAULT_K_PER_SOURCE)
     return max(6, DEFAULT_K_PER_SOURCE)
 
 
@@ -1131,12 +1496,277 @@ def _split_sentences(text: str) -> list[str]:
     return [fallback] if fallback else []
 
 
+COUNT_QUERY_STOPWORDS = {
+    "a", "an", "the", "and", "or", "for", "of", "to", "in", "on", "at", "by", "with",
+    "is", "are", "was", "were", "be", "been", "being", "there", "this", "that",
+    "give", "me", "please", "tell", "show", "related", "about", "from", "document",
+    "count", "number", "total", "many", "much", "all",
+}
+
+NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+
+
+def _parse_number_token(value: str | None) -> int | None:
+    if value is None:
+        return None
+    token = str(value).strip().lower().replace(",", "")
+    if not token:
+        return None
+    if token.isdigit():
+        try:
+            return int(token)
+        except Exception:
+            return None
+    return NUMBER_WORDS.get(token)
+
+
+def _extract_count_target(question: str) -> str:
+    """Extract likely count target phrase from noisy user questions."""
+    q = (question or "").lower()
+    tokens = re.findall(r"[a-z0-9][a-z0-9_-]*", q)
+    if not tokens:
+        return ""
+
+    starts: list[int] = []
+    for i in range(max(0, len(tokens) - 1)):
+        if tokens[i] == "how" and tokens[i + 1] == "many":
+            starts.append(i + 2)
+    for i in range(max(0, len(tokens) - 1)):
+        if tokens[i] in {"number", "count", "total"} and tokens[i + 1] == "of":
+            starts.append(i + 2)
+
+    if not starts and "count" in tokens:
+        starts.append(tokens.index("count") + 1)
+
+    if not starts:
+        return ""
+
+    best_terms: list[str] = []
+    for start in starts:
+        tail = tokens[start:start + 8]
+        filtered = [t for t in tail if len(t) > 2 and t not in COUNT_QUERY_STOPWORDS]
+        if filtered and len(filtered) > len(best_terms):
+            best_terms = filtered
+
+    return " ".join(best_terms[:4]).strip()
+
+
+def _build_count_query_candidates(question: str) -> list[str]:
+    """Generate resilient retrieval queries for count-style prompts."""
+    normalized = " ".join((question or "").split()).strip()
+    target = _extract_count_target(question)
+    candidates = [normalized]
+    if target:
+        candidates.extend([
+            f"how many {target}",
+            f"number of {target}",
+            f"total {target}",
+            target,
+        ])
+
+    # Generic fallback for very noisy prompts.
+    candidates.append("count total")
+
+    deduped: list[str] = []
+    seen = set()
+    for candidate in candidates:
+        c = candidate.strip()
+        if not c:
+            continue
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+    return deduped
+
+
+def _docstore_count_context(vectorstore, target: str, max_docs: int = 200) -> tuple[str, list[Document]]:
+    """Build context directly from in-memory docstore when retrieval misses count evidence."""
+    raw_docs = getattr(getattr(vectorstore, "docstore", None), "_dict", {})
+    if not isinstance(raw_docs, dict):
+        return "", []
+
+    target_terms = [t for t in _content_words(target) if t]
+    selected: list[Document] = []
+    fallback: list[Document] = []
+
+    for value in raw_docs.values():
+        content = getattr(value, "page_content", "")
+        metadata = getattr(value, "metadata", {}) or {}
+        if not _is_allowed_retrieval_source_name(str(metadata.get("source", ""))):
+            continue
+        if not content:
+            continue
+
+        doc = Document(page_content=content, metadata=metadata)
+        fallback.append(doc)
+
+        lowered = content.lower()
+        if target_terms and any(term in lowered for term in target_terms):
+            selected.append(doc)
+
+    docs = (selected or fallback)[:max_docs]
+    return _docs_to_context(docs), docs
+
+
+def _estimate_limitation_count_from_docstore(vectorstore) -> tuple[int | None, list[Document], str]:
+    """Estimate limitation row count for table-style PDFs without explicit numeric totals."""
+    raw_docs = getattr(getattr(vectorstore, "docstore", None), "_dict", {})
+    if not isinstance(raw_docs, dict) or not raw_docs:
+        return None, [], ""
+
+    docs: list[Document] = []
+    all_text_parts: list[str] = []
+    for value in raw_docs.values():
+        content = (getattr(value, "page_content", "") or "").strip()
+        if not content:
+            continue
+        metadata = getattr(value, "metadata", {}) or {}
+        if not _is_allowed_retrieval_source_name(str(metadata.get("source", ""))):
+            continue
+        docs.append(value if isinstance(value, Document) else Document(page_content=content, metadata=metadata))
+        all_text_parts.append(content)
+
+    if not all_text_parts:
+        return None, [], ""
+
+    merged_text = "\n".join(all_text_parts)
+    merged_lower = merged_text.lower()
+    if "limita" not in merged_lower:
+        return None, docs, merged_text
+
+    action_prefixes = (
+        "use ",
+        "add ",
+        "keep ",
+        "cache ",
+        "move ",
+        "batch ",
+        "run ",
+        "periodically ",
+    )
+
+    # In limitation/fix tables, each limitation row typically has exactly one actionable fix line.
+    action_lines: list[str] = []
+    seen = set()
+    for raw_line in merged_text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if len(line) < 10:
+            continue
+        # OCR/table wraps can produce continuation lines; count only primary action lines.
+        if not line[:1].isupper():
+            continue
+        line_lower = line.lower()
+        if not line_lower.startswith(action_prefixes):
+            continue
+        if line_lower in seen:
+            continue
+        seen.add(line_lower)
+        action_lines.append(line)
+
+    if len(action_lines) >= 2:
+        return len(action_lines), docs, merged_text
+    return None, docs, merged_text
+
+
 def _is_count_question(question: str) -> bool:
     """Detect requests asking for counts/totals/how-many style answers."""
     q = (question or "").lower()
     return any(token in q for token in [
-        "how many", "number of", "count", "total number", "total count", "no. of", "no of"
+        "how many", "number of", "count", "total number", "total count", "no. of", "no of", "how much"
     ])
+
+
+def _is_smalltalk_question(question: str) -> bool:
+    """Detect greeting/chitchat prompts that should not hit strict document retrieval."""
+    q = _normalize_query(question)
+    if not q:
+        return False
+
+    direct_greetings = {
+        "hi", "hii", "hiii", "hello", "hey", "hey there", "yo", "sup",
+        "good morning", "good afternoon", "good evening",
+    }
+    if q in direct_greetings:
+        return True
+
+    return any(
+        q.startswith(prefix)
+        for prefix in (
+            "hi ", "hello ", "hey ", "how are you", "who are you", "what can you do",
+        )
+    )
+
+
+def _smalltalk_response() -> str:
+    return (
+        "Hi! I can answer questions from your uploaded document. "
+        "Ask something like: What are the key points, main limitations, or summary?"
+    )
+
+
+def _finalize_formatted_answer(question: str, answer: str, context: str) -> str:
+    """Preserve structure for insights prompts (bullets, one-line summaries)."""
+    text = (answer or "").strip()
+    if not text:
+        return _extractive_fallback_answer(question, context) if context else ANSWER_NOT_FOUND_TEXT
+
+    q_norm = _normalize_query(question)
+
+    # Keep exactly one concise line for one-line summary prompts.
+    if "one-line summary" in q_norm:
+        sentences = _split_sentences(text)
+        if sentences:
+            return re.sub(r"\s+", " ", sentences[0]).strip()[:220].rstrip()
+        return re.sub(r"\s+", " ", text).strip()[:220].rstrip()
+
+    # Preserve bullet formatting for insights output.
+    if "key insights" in q_norm or "bullet" in q_norm:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        bullet_lines = [
+            ln for ln in lines
+            if re.match(r"^(?:[-*•]|\d+[\).])\s+", ln)
+        ]
+        if bullet_lines:
+            return "\n".join(bullet_lines[:5])
+
+        flattened = re.sub(r"\s+", " ", text).strip()
+        sentences = _split_sentences(flattened)
+        if not sentences:
+            return flattened[:520].rstrip()
+
+        bullets: list[str] = []
+        for sent in sentences[:5]:
+            clean_sent = sent.strip()
+            if not clean_sent:
+                continue
+            bullets.append(f"- {clean_sent}")
+        return "\n".join(bullets) if bullets else flattened[:520].rstrip()
+
+    return text
 
 
 def _is_page_count_question(question: str) -> bool:
@@ -1158,20 +1788,19 @@ def _extract_count_value(answer: str, context: str) -> str | None:
     """Infer a count value from explicit totals or enumerated lists."""
     combined_answer = answer or ""
     combined_context = context or ""
+    number_token_pattern = r"(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
 
     total_patterns = [
-        r"(?:there are|there is|count is|total(?:\s+of)?|number of [a-z\s]+ is)\s+(\d+)",
-        r"(?:count|total|number)\s*[:=]\s*(\d+)",
+        rf"(?:there are|there is|count is|total(?:\s+of)?|number of [a-z\s]+ is)\s+{number_token_pattern}",
+        rf"(?:count|total|number)\s*[:=]\s*{number_token_pattern}",
+        rf"{number_token_pattern}\s+(?:[a-z-]+\s+){{0,3}}(?:items|points|steps|limitations|issues|findings|pages)\b",
     ]
     for pattern in total_patterns:
         m = re.search(pattern, combined_answer, re.IGNORECASE)
         if m:
-            try:
-                if int(m.group(1)) <= 0:
-                    continue
-            except Exception:
-                pass
-            return m.group(1)
+            parsed = _parse_number_token(m.group(1))
+            if parsed is not None and parsed > 0:
+                return str(parsed)
 
     # For structured lists like "1) ... 2) ... 3) ...", use the largest index.
     enum_values = re.findall(r"(?:^|\s)(\d{1,3})\s*[\).:-]", combined_answer + "\n" + combined_context)
@@ -1246,6 +1875,9 @@ def _fast_count_response(question: str, namespace: str | None = None) -> dict | 
         return None
 
     count_value: str | None = None
+    used_structured_estimate = False
+    selected_docs: list[Document] = []
+    selected_context = ""
     if _is_page_count_question(question):
         pages = _count_pages_from_faiss(namespace=namespace)
         if pages is not None and pages > 0:
@@ -1253,23 +1885,48 @@ def _fast_count_response(question: str, namespace: str | None = None) -> dict | 
 
     try:
         vectorstore = _load_vectorstore(namespace=namespace)
-        docs = vectorstore.similarity_search(question, k=6)
+        query_candidates = _build_count_query_candidates(question)
+        docs: list[Document] = []
+        for idx, candidate in enumerate(query_candidates):
+            k = 6 if idx == 0 else 14
+            docs = vectorstore.similarity_search(candidate, k=k)
+            context = _docs_to_context(docs) if docs else ""
+            if count_value is None:
+                count_value = _extract_count_value("", context)
+            if count_value:
+                selected_docs = docs
+                selected_context = context
+                break
+
+        if not count_value:
+            target = _extract_count_target(question)
+            context, fallback_docs = _docstore_count_context(vectorstore, target)
+            fallback_count = _extract_count_value("", context)
+            if fallback_count:
+                count_value = fallback_count
+                selected_docs = fallback_docs
+                selected_context = context
+
+        # Fallback for table-style limitation documents that list items but omit explicit totals.
+        if not count_value and "limitation" in (question or "").lower():
+            estimated, limitation_docs, limitation_context = _estimate_limitation_count_from_docstore(vectorstore)
+            if estimated is not None and estimated > 0:
+                count_value = str(estimated)
+                used_structured_estimate = True
+                selected_docs = limitation_docs
+                selected_context = limitation_context
     except Exception:
-        docs = []
-
-    context = _docs_to_context(docs) if docs else ""
-
-    if count_value is None:
-        count_value = _extract_count_value("", context)
+        selected_docs = []
+        selected_context = ""
 
     if not count_value:
         return None
 
-    detail = _supporting_detail(question, context, context)
+    detail = None if used_structured_estimate else _supporting_detail(question, selected_context, selected_context)
     answer = _format_count_answer(question, count_value, detail)
     return {
         "answer": answer,
-        "sources": _serialize_sources(docs, max_items=1),
+        "sources": _serialize_sources(selected_docs, max_items=1),
     }
 
 
@@ -1301,30 +1958,32 @@ def _postprocess_answer(question: str, answer: str, context: str) -> str:
     """Keep responses short/relevant and make count answers explicit."""
     cleaned = re.sub(r"\s+", " ", (answer or "")).strip()
     if not cleaned:
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     if _is_count_question(question):
         number = _extract_count_value(cleaned, context)
         if number:
             detail = _supporting_detail(question, cleaned, context)
             return _format_count_answer(question, number, detail)
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     sentences = _split_sentences(cleaned)
     if not sentences:
         return cleaned[:320]
 
-    # Keep normal answers brief and focused by prioritizing question-overlap sentences.
+    # Keep normal answers focused but not over-compressed.
     q_words = _content_words(question)
     ranked = sorted(
         enumerate(sentences),
         key=lambda item: len(q_words & _content_words(item[1])),
         reverse=True,
     )
-    selected_idx = sorted(idx for idx, _ in ranked[:2])
-    selected = [sentences[i] for i in selected_idx] if selected_idx else sentences[:2]
+    take_n = 3 if _is_summary_like_question(question) else 2
+    selected_idx = sorted(idx for idx, _ in ranked[:take_n])
+    selected = [sentences[i] for i in selected_idx] if selected_idx else sentences[:take_n]
     brief = " ".join(selected).strip()
-    return brief[:420].rstrip()
+    max_chars = 520 if _is_summary_like_question(question) else 420
+    return brief[:max_chars].rstrip()
 
 
 def _prune_ungrounded_sentences(answer: str, context: str) -> str:
@@ -1353,7 +2012,7 @@ def _extractive_fallback_answer(question: str, context: str) -> str:
     """Build a short answer directly from context when generative output is weak."""
     blocks = [b.strip() for b in context.split("\n\n") if b.strip()]
     if not blocks:
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     q_words = _content_words(question)
     scored: list[tuple[float, str]] = []
@@ -1370,7 +2029,7 @@ def _extractive_fallback_answer(question: str, context: str) -> str:
         scored.append((overlap, content))
 
     if not scored:
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     # Sort by relevance; always return something even if overlap is 0
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1380,6 +2039,38 @@ def _extractive_fallback_answer(question: str, context: str) -> str:
     if not sentences:
         return _postprocess_answer(question, best_text[:280], context)
     return _postprocess_answer(question, " ".join(sentences[:3]), context)
+
+
+def _is_summary_like_question(question: str) -> bool:
+    q = (question or "").lower()
+    return any(
+        token in q
+        for token in (
+            "summary",
+            "summarize",
+            "summarise",
+            "overview",
+            "key insights",
+            "key points",
+            "main points",
+            "brief",
+        )
+    )
+
+
+def _extractive_summary_from_context(context: str, max_sentences: int = 3, max_chars: int = 420) -> str:
+    """Build a compact extractive summary directly from retrieved context text."""
+    text = re.sub(r"\[Source:[^\]]+\]", " ", context or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ANSWER_NOT_FOUND_TEXT
+
+    sentences = [s.strip() for s in _split_sentences(text) if len(s.strip().split()) >= 6]
+    if not sentences:
+        return text[:max_chars].rstrip()
+
+    summary = " ".join(sentences[:max_sentences]).strip()
+    return summary[:max_chars].rstrip()
 
 
 def _query_supported_by_docs(question: str, docs: list[Document]) -> bool:
@@ -1402,6 +2093,114 @@ def _query_supported_by_docs(question: str, docs: list[Document]) -> bool:
         return lexical_overlap >= 0.12 or max_lexical >= 0.08 or rerank_best >= max(RERANK_MIN_SCORE, 0.35)
 
     return lexical_overlap >= 0.14 or max_lexical >= 0.10
+
+
+def _query_term_support_ratio(question: str, docs: list[Document]) -> float:
+    """Compute explicit query-term support ratio from selected docs."""
+    if not docs:
+        return 0.0
+    q_words = _content_words(question)
+    if not q_words:
+        return 0.0
+    context_words = _content_words("\n".join((d.page_content or "") for d in docs))
+    if not context_words:
+        return 0.0
+    return len(q_words & context_words) / len(q_words)
+
+
+def _keyword_fallback_docs(question: str, namespace: str | None = None, max_docs: int = 12) -> list[Document]:
+    """Last-resort lexical recovery path for missed acronym/entity chunks (e.g., FAISS)."""
+    try:
+        vectorstore = _load_vectorstore(namespace=namespace)
+    except Exception:
+        return []
+
+    raw_docs = getattr(getattr(vectorstore, "docstore", None), "_dict", {})
+    if not isinstance(raw_docs, dict):
+        return []
+
+    question_tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", question or "")
+    acronym_terms = {
+        token.lower()
+        for token in question_tokens
+        if len(token) >= 3 and token.isupper()
+    }
+    focus_terms = _content_words(question) | acronym_terms
+    if not focus_terms:
+        return []
+
+    scored: list[tuple[float, Document]] = []
+    for value in raw_docs.values():
+        content = getattr(value, "page_content", "")
+        metadata = getattr(value, "metadata", {}) or {}
+        if not _is_allowed_retrieval_source_name(str(metadata.get("source", ""))):
+            continue
+        if not content:
+            continue
+        lowered = content.lower()
+        matched = [term for term in focus_terms if term in lowered]
+        if not matched:
+            continue
+
+        overlap = len(set(matched)) / max(1, len(focus_terms))
+        acronym_hit = any(term in lowered for term in acronym_terms) if acronym_terms else False
+        score = overlap + (0.2 if acronym_hit else 0.0)
+
+        if isinstance(value, Document):
+            doc = value
+        else:
+            doc = Document(page_content=content, metadata=metadata)
+        scored.append((score, doc))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    selected: list[Document] = []
+    seen = set()
+    for _, doc in scored:
+        metadata = doc.metadata or {}
+        dedup_key = (
+            metadata.get("chunk_hash", ""),
+            metadata.get("source", ""),
+            metadata.get("page", ""),
+            (doc.page_content or "")[:120],
+        )
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        selected.append(doc)
+        if len(selected) >= max_docs:
+            break
+    return selected
+
+
+def _passes_retrieval_threshold(docs: list[Document]) -> bool:
+    """Optional hard gate on top retrieval score to prevent low-confidence answers."""
+    if not RETRIEVAL_THRESHOLD_ENABLED:
+        return True
+    if not docs:
+        return False
+
+    scores: list[float] = []
+    for doc in docs:
+        metadata = doc.metadata or {}
+        score = metadata.get("vector_score")
+        if score is None:
+            continue
+        try:
+            scores.append(float(score))
+        except Exception:
+            continue
+
+    # If scores are unavailable for a backend call path, do not block by threshold.
+    if not scores:
+        return True
+
+    if _vector_score_lower_is_better():
+        return min(scores) <= RETRIEVAL_MIN_SCORE
+    return max(scores) >= RETRIEVAL_MIN_SCORE
 
 
 def _docs_to_context(docs: list[Document]) -> str:
@@ -1506,16 +2305,82 @@ def _filter_sources_by_answer_support(answer: str, docs: list[Document], max_ite
 
 def _build_source_context(question: str, source: str, k: int = 8, namespace: str | None = None) -> str:
     """Retrieve context from a single source document only, with cross-encoder reranking."""
+    if not _is_allowed_retrieval_source_name(source):
+        return ""
     vectorstore = _load_vectorstore(namespace=namespace)
-    # Fetch extra candidates so the reranker has room to reorder
-    docs = vectorstore.similarity_search(question, k=k * 2, filter={"source": source})
+    docs: list[Document] = []
+
+    # Primary path: vectorstore-level metadata filter.
+    try:
+        docs = vectorstore.similarity_search(question, k=k * 2, filter={"source": source})
+    except Exception:
+        docs = []
+
+    docs = [
+        d for d in docs
+        if _doc_is_allowed_for_retrieval(d) and _same_source_name((d.metadata or {}).get("source", ""), source)
+    ]
+
+    # Fallback path: retrieve globally and filter by source in Python.
+    if not docs:
+        try:
+            global_docs = vectorstore.similarity_search(question, k=max(24, k * 8))
+        except Exception:
+            global_docs = []
+        docs = [
+            d for d in global_docs
+            if _doc_is_allowed_for_retrieval(d) and _same_source_name((d.metadata or {}).get("source", ""), source)
+        ]
+
+    # Final fallback: scan docstore for source chunks and rerank locally.
+    if not docs:
+        raw_docs = getattr(getattr(vectorstore, "docstore", None), "_dict", {})
+        if isinstance(raw_docs, dict):
+            for value in raw_docs.values():
+                content = getattr(value, "page_content", "")
+                metadata = getattr(value, "metadata", {}) or {}
+                if not content:
+                    continue
+                if not _is_allowed_retrieval_source_name(str(metadata.get("source", ""))):
+                    continue
+                if not _same_source_name(metadata.get("source", ""), source):
+                    continue
+                if isinstance(value, Document):
+                    docs.append(value)
+                else:
+                    docs.append(Document(page_content=content, metadata=metadata))
+
     docs = _rerank(question, docs, top_n=k)
     return _docs_to_context(docs)
 
 
 def get_document_sources(namespace: str | None = None) -> list[str]:
     """Return tracked document source names from metadata."""
-    sources = _load_index_meta(namespace=namespace).get("sources", [])
+    # Prefer sources that actually exist in the current vectorstore/docstore.
+    try:
+        vectorstore = _load_vectorstore(namespace=namespace)
+        raw_docs = getattr(getattr(vectorstore, "docstore", None), "_dict", {})
+        if isinstance(raw_docs, dict) and raw_docs:
+            seen = set()
+            sources_from_store: list[str] = []
+            for value in raw_docs.values():
+                metadata = getattr(value, "metadata", {}) or {}
+                source = str(metadata.get("source", "")).strip()
+                if not source or not _is_allowed_retrieval_source_name(source):
+                    continue
+                key = Path(source).name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                sources_from_store.append(Path(source).name)
+            return sources_from_store
+    except Exception:
+        pass
+
+    sources = [
+        str(s) for s in _load_index_meta(namespace=namespace).get("sources", [])
+        if _is_allowed_retrieval_source_name(str(s))
+    ]
     if sources:
         return sources
 
@@ -1524,21 +2389,64 @@ def get_document_sources(namespace: str | None = None) -> list[str]:
     if uploads_dir.exists():
         return [
             p.name for p in uploads_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in {".pdf", ".docx", ".txt", ".html", ".htm"}
+            if p.is_file() and _is_allowed_retrieval_source_name(p.name)
         ]
     return []
 
 
+def _is_offer_field_question(question: str) -> bool:
+    """Return True only for employment/offer-letter specific field questions."""
+    q_lower = question.lower()
+    core_keywords = [
+        "offer", "appointment", "employer", "company", "organization",
+        "salary", "ctc", "compensation", "stipend", "remuneration", "lpa",
+        "designation", "joining", "commencement", "doj", "intern",
+    ]
+    aux_keywords = [
+        "location", "office", "address", "where", "center", "centre",
+        "date", "start", "when", "position", "role", "title", "profile",
+    ]
+
+    has_core = any(keyword in q_lower for keyword in core_keywords)
+    has_aux = any(keyword in q_lower for keyword in aux_keywords)
+
+    # Require explicit employment cues to avoid hijacking generic PDF questions.
+    return has_core or (has_aux and any(k in q_lower for k in ["offer", "employ", "joining", "designation", "salary"]))
+
+
+def _looks_like_offer_letter_context(context: str) -> bool:
+    """Return True when retrieved context appears to be offer/appointment letter content."""
+    c_lower = (context or "").lower()
+    if not c_lower.strip():
+        return False
+
+    hints = [
+        "offer letter",
+        "appointment letter",
+        "date of commencement",
+        "designation",
+        "ctc",
+        "stipend",
+        "compensation",
+        "joining",
+        "remuneration",
+        "employer",
+        "employee",
+    ]
+    hit_count = sum(1 for hint in hints if hint in c_lower)
+    return hit_count >= 2
+
+
+def _is_company_name_question(question: str) -> bool:
+    q_lower = question.lower()
+    return any(k in q_lower for k in ["company name", "name of the company", "organization name", "employer name", "which company"])
+
+
 def _extract_offer_field_directly(question: str, context: str) -> str | None:
-    """
-    For offer-letter field questions (location, salary, joining date, role, etc.),
-    extract the value directly from context by pattern matching to avoid LLM drift.
-    Returns the extracted value or None if no pattern matches.
-    """
+    """Extract structured employment fields directly from context when explicitly present."""
     q_lower = question.lower()
 
-    # Company name extraction: return a deterministic value when explicitly present.
-    if any(term in q_lower for term in ["company name", "name of the company", "organization name", "employer name", "which company"]):
+    if _is_company_name_question(question):
         company_patterns = [
             r"(?:company|organization|employer)\s*name\s*(?:is|:)?\s*([A-Za-z][A-Za-z &.,'-]{2,60})",
             r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\s+(?:Private Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?|LLP)\b",
@@ -1546,9 +2454,8 @@ def _extract_offer_field_directly(question: str, context: str) -> str | None:
         for pattern in company_patterns:
             match = re.search(pattern, context, re.IGNORECASE)
             if match:
-                return match.group(1).strip().rstrip('.,')
+                return match.group(1).strip().rstrip(".,")
 
-    # Location extraction: "What is the company location?", "Where is the office?"
     if any(term in q_lower for term in ["location", "office", "address", "located", "where", "centre", "center"]):
         patterns = [
             r"based at (?:our |the )?([A-Za-z\s]+?)(?:\s*Centre|\s*Center|\.|,)",
@@ -1558,46 +2465,38 @@ def _extract_offer_field_directly(question: str, context: str) -> str | None:
         for pattern in patterns:
             match = re.search(pattern, context, re.IGNORECASE)
             if match:
-                return match.group(1).strip().rstrip('.,')
+                return match.group(1).strip().rstrip(".,")
 
-    # Joining/Commencement date extraction: "When do I join?", "What is the joining date?"
     if any(term in q_lower for term in ["join", "start", "commencement", "date", "doj", "when", "beginning"]):
         patterns = [
-            r"date of (?:commencement|joining).*?(?:from\s+)?(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})",  # "from 11-Mar-2026"
-            r"will be from\s+(\d{1,2}-\w+-\d{4})",  # "will be from 11-Mar-2026"
+            r"date of (?:commencement|joining).*?(?:from\s+)?(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})",
+            r"will be from\s+(\d{1,2}-\w+-\d{4})",
         ]
         for pattern in patterns:
             match = re.search(pattern, context, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
 
-    # Salary/Compensation extraction: "What is the salary?", "What is the CTC?"
     if any(term in q_lower for term in ["salary", "ctc", "compensation", "pay", "stipend", "lpa", "remuneration"]):
         patterns = [
-            r"(?:Rs|â‚¹)\s*([\d,.]+(?:\s*(?:lakh|crore|per month|per annum))?)",  # Capture "Rs 50,000 per month"
-            r"(?:CTC|compensation|salary)[:\s]+(?:Rs|â‚¹)\s*([\d,.]+(?:\s*(?:lakh|crore))?)",  # "CTC: Rs 5 lakh"
+            r"(?:Rs|INR)\s*([\d,.]+(?:\s*(?:lakh|crore|per month|per annum))?)",
+            r"(?:CTC|compensation|salary)[:\s]+(?:Rs|INR)\s*([\d,.]+(?:\s*(?:lakh|crore))?)",
         ]
         for pattern in patterns:
             match = re.search(pattern, context, re.IGNORECASE)
             if match:
-                extracted = match.group(1).strip()
-                # Look back to include "Rs" or "â‚¹" if available
-                full_match = match.group(0)
-                if full_match.startswith(("Rs", "â‚¹")):
-                    return full_match.strip()
-                return extracted
+                return match.group(0).strip()
 
-    # Designation extraction: "What is my designation?", "What position will I have?"
     if any(term in q_lower for term in ["designation", "position", "role", "title", "profile", "intern", "engineer"]):
         patterns = [
-            r"designated as\s+([A-Za-z\s]+?)(?:\s+(?:and|Intern)|\s+and will)",  # "designated as Frontend Developer Intern"
-            r"will be designated as\s+([A-Za-z\s]+?)(?:\s+and|\s+Intern|\.)",  # "will be designated as Frontend Developer Intern"
-            r"Your designation is\s+([A-Za-z\s]+?)(?:\.|,)",  # "Your designation is Frontend Developer"
+            r"designated as\s+([A-Za-z\s]+?)(?:\s+(?:and|Intern)|\s+and will)",
+            r"will be designated as\s+([A-Za-z\s]+?)(?:\s+and|\s+Intern|\.)",
+            r"Your designation is\s+([A-Za-z\s]+?)(?:\.|,)",
         ]
         for pattern in patterns:
             match = re.search(pattern, context, re.IGNORECASE)
             if match:
-                return match.group(1).strip().rstrip('.')
+                return match.group(1).strip().rstrip(".")
 
     return None
 
@@ -1613,6 +2512,15 @@ def _groq_enabled() -> bool:
     return bool((os.getenv("GROQ_API_KEY") or "").strip())
 
 
+def _gemini_enabled() -> bool:
+    """Return True when Gemini is allowed by config and API key is present."""
+    if LLM_PROVIDER == "extractive":
+        return False
+    if LLM_PROVIDER not in {"gemini", "hybrid"}:
+        return False
+    return bool(GEMINI_API_KEY)
+
+
 def _build_ollama_llm():
     """Build local Ollama chat model when enabled and available."""
     if not OLLAMA_ENABLED:
@@ -1621,51 +2529,148 @@ def _build_ollama_llm():
         print("Ollama provider enabled, but langchain_community ChatOllama is unavailable.")
         return None
     try:
-        return ChatOllama(
-            model=OLLAMA_MODEL,
-            base_url=OLLAMA_BASE_URL,
-            temperature=OLLAMA_TEMPERATURE,
-            request_timeout=LOCAL_LLM_TIMEOUT_SECONDS,
-        )
+        kwargs = {
+            "model": OLLAMA_MODEL,
+            "base_url": OLLAMA_BASE_URL,
+            "temperature": OLLAMA_TEMPERATURE,
+            "request_timeout": LOCAL_LLM_TIMEOUT_SECONDS,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "num_ctx": OLLAMA_NUM_CTX,
+            "num_predict": OLLAMA_NUM_PREDICT,
+        }
+        if OLLAMA_NUM_THREAD > 0:
+            kwargs["num_thread"] = OLLAMA_NUM_THREAD
+
+        # When GPU-only mode is requested, force at least one GPU layer.
+        # Otherwise, preserve explicit positive overrides and let -1 mean provider default.
+        if OLLAMA_GPU_ONLY:
+            kwargs["num_gpu"] = OLLAMA_NUM_GPU if OLLAMA_NUM_GPU > 0 else 1
+        elif OLLAMA_NUM_GPU > 0:
+            kwargs["num_gpu"] = OLLAMA_NUM_GPU
+        llm = ChatOllama(**kwargs)
+        if OLLAMA_GPU_ONLY:
+            _assert_ollama_gpu_runtime()
+        return llm
     except Exception as e:
-        print(f"Ollama initialization failed, falling back to other providers: {e}")
+        if OLLAMA_GPU_ONLY:
+            raise
+        print(f"Ollama initialization failed: {e}")
         return None
 
 
-def _run_prompt_with_context(question: str, context: str, enforce_grounding: bool = True) -> str:
-    """Run the core QA prompt against an explicit context string."""
-    # For offer-letter field questions, try precise extraction first to avoid LLM drift.
-    extracted_field = _extract_offer_field_directly(question, context)
-    if extracted_field:
-        return extracted_field
+def _load_ollama_llm():
+    """Lazy-load Ollama model instance."""
+    global _ollama_llm
+    if _ollama_llm is not None:
+        return _ollama_llm
+    _ollama_llm = _build_ollama_llm()
+    return _ollama_llm
 
-    llm = load_llm()
-    if llm is None:
-        return _extractive_fallback_answer(question, context)
 
+def _build_gemini_llm():
+    """Build Gemini chat model when enabled and available."""
+    if not _gemini_enabled():
+        return None
+    if ChatGoogleGenerativeAI is None:
+        print("Gemini provider enabled, but langchain_google_genai is unavailable.")
+        return None
+    try:
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            google_api_key=GEMINI_API_KEY,
+            temperature=GEMINI_TEMPERATURE,
+            max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+        )
+    except Exception as e:
+        print(f"Gemini initialization failed: {e}")
+        return None
+
+
+def _load_gemini_llm():
+    """Lazy-load Gemini model instance."""
+    global _gemini_llm
+    if _gemini_llm is not None:
+        return _gemini_llm
+    _gemini_llm = _build_gemini_llm()
+    return _gemini_llm
+
+
+def _ollama_ps_shows_gpu(model_hint: str | None = None) -> bool:
+    """Check ollama ps output for active GPU processor rows."""
+    try:
+        proc = subprocess.run(
+            ["ollama", "ps"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        out = (proc.stdout or "").strip()
+        if not out:
+            return False
+        rows = [ln.strip() for ln in out.splitlines()[1:] if ln.strip()]
+        if model_hint:
+            rows = [ln for ln in rows if model_hint.split(":")[0] in ln]
+        if not rows:
+            return False
+        return any("GPU" in ln.upper() for ln in rows)
+    except Exception:
+        return False
+
+
+def _assert_ollama_gpu_runtime() -> None:
+    """Fail fast when GPU-only mode is requested but Ollama is running on CPU."""
+    if _ollama_ps_shows_gpu(OLLAMA_MODEL):
+        return
+
+    # Warm up model explicitly with high GPU offload request, then re-check processor mode.
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": "Respond with exactly: OK",
+        "stream": False,
+        "keep_alive": "5m",
+        "options": {
+            "num_gpu": OLLAMA_NUM_GPU if OLLAMA_NUM_GPU > 0 else 99,
+        },
+    }
+    endpoint = f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate"
+
+    try:
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=min(60, LOCAL_LLM_TIMEOUT_SECONDS)) as resp:
+            resp.read()
+    except Exception:
+        pass
+
+    if _ollama_ps_shows_gpu(OLLAMA_MODEL):
+        return
+
+    raise RuntimeError(
+        "OLLAMA_GPU_ONLY=true but Ollama is running on CPU. "
+        "Verify NVIDIA drivers, Ollama GPU build, and server runtime configuration."
+    )
+
+
+def _run_prompt_single_llm(
+    llm,
+    question: str,
+    context: str,
+    enforce_grounding: bool = True,
+    preserve_format: bool = False,
+) -> str:
+    """Run prompt against one LLM and apply grounding checks."""
     template = PromptTemplate.from_template(
-        """You have access to content from multiple documents. \
-Answer using ONLY the context below. \
-Do not use outside knowledge or guess. \
-If the answer spans multiple documents, synthesize strictly from the provided context. \
-If the answer is not in the context, reply exactly: I don't know based on the provided context.
-
-Write a concise answer (1-3 sentences) that directly addresses the user's question terms.
-Use wording from the context where possible, and avoid introducing new claims or entities.
-Only include claims that can be supported by the context.
-Do not add prefatory text.
-If the question asks for a count/number, return only the count in one short sentence.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:"""
+        SYSTEM_PROMPT_TEMPLATE + "\n\n" + USER_PROMPT_TEMPLATE
     )
     chain = template | llm | StrOutputParser()
     answer = chain.invoke({"context": context, "question": question})
+
+    if preserve_format and not enforce_grounding:
+        return _finalize_formatted_answer(question, str(answer or ""), context)
+
     answer = _prune_ungrounded_sentences(answer, context)
     answer = _postprocess_answer(question, answer, context)
 
@@ -1675,27 +2680,8 @@ Answer:"""
     if _grounding_ratio(answer, context) >= MIN_GROUNDEDNESS_RATIO:
         return answer
 
-    # Retry once with stricter extractive constraints.
-    strict_template = PromptTemplate.from_template(
-        """You are a strict grounded answerer.
-Use ONLY facts explicitly stated in the context.
-Do not infer, generalize, or add unstated information.
-If context is insufficient, reply exactly: I don't know based on the provided context.
-
-Requirements:
-- 2-5 sentences.
-- Reuse exact terms from the question.
-- Keep wording close to context language.
-- No speculation.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:"""
-    )
+    # Retry once with a stricter anti-hallucination template.
+    strict_template = PromptTemplate.from_template(STRICT_GROUNDED_PROMPT_TEMPLATE)
     strict_chain = strict_template | llm | StrOutputParser()
     strict_answer = strict_chain.invoke({"context": context, "question": question})
     strict_answer = _prune_ungrounded_sentences(strict_answer, context)
@@ -1704,12 +2690,119 @@ Answer:"""
     if _grounding_ratio(strict_answer, context) >= MIN_GROUNDEDNESS_RATIO:
         return strict_answer
 
-    return _extractive_fallback_answer(question, context)
+    # Structured-field fallback is used only after normal grounded QA fails.
+    if STRUCTURED_FIELD_FALLBACK_ENABLED and _is_offer_field_question(question) and _looks_like_offer_letter_context(context):
+        extracted_field = _extract_offer_field_directly(question, context)
+        if extracted_field:
+            return extracted_field
+
+    return ANSWER_NOT_FOUND_TEXT
+
+
+def _is_not_found_answer(answer: str) -> bool:
+    return (answer or "").strip() == ANSWER_NOT_FOUND_TEXT
+
+
+def _choose_hybrid_answer(candidates: list[tuple[str, str]], context: str) -> str:
+    """Pick the best grounded hybrid candidate with stable tie-breaking."""
+    if not candidates:
+        return ANSWER_NOT_FOUND_TEXT
+
+    scored: list[tuple[float, int, str]] = []
+    for provider_name, answer in candidates:
+        cleaned = (answer or "").strip()
+        if not cleaned:
+            continue
+        if _is_not_found_answer(cleaned):
+            score = -1.0
+        else:
+            score = _grounding_ratio(cleaned, context)
+        preference_bonus = 1 if provider_name == HYBRID_PREFERRED_PROVIDER else 0
+        scored.append((score, preference_bonus, cleaned))
+
+    if not scored:
+        return ANSWER_NOT_FOUND_TEXT
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best_score, _, best_answer = scored[0]
+    if best_score < 0:
+        return ANSWER_NOT_FOUND_TEXT
+    return best_answer
+
+
+def _run_prompt_with_context(
+    question: str,
+    context: str,
+    enforce_grounding: bool = True,
+    preserve_format: bool = False,
+    allow_partial_hybrid_on_error: bool = False,
+) -> str:
+    """Run the core QA prompt against an explicit context string."""
+    if LLM_PROVIDER == "hybrid":
+        ollama_llm = _load_ollama_llm()
+        gemini_llm = _load_gemini_llm()
+
+        # Hybrid mode is strict: both providers must be available and participate.
+        if ollama_llm is None or gemini_llm is None:
+            raise RuntimeError(
+                "LLM_PROVIDER=hybrid requires both Ollama and Gemini, but one provider is unavailable."
+            )
+
+        candidates: list[tuple[str, str]] = []
+        call_errors: list[str] = []
+
+        try:
+            candidates.append((
+                "ollama",
+                _run_prompt_single_llm(
+                    ollama_llm,
+                    question,
+                    context,
+                    enforce_grounding,
+                    preserve_format,
+                ),
+            ))
+        except Exception as e:
+            call_errors.append(f"ollama error: {str(e)}")
+
+        try:
+            candidates.append((
+                "gemini",
+                _run_prompt_single_llm(
+                    gemini_llm,
+                    question,
+                    context,
+                    enforce_grounding,
+                    preserve_format,
+                ),
+            ))
+        except Exception as e:
+            call_errors.append(f"gemini error: {str(e)}")
+
+        if call_errors:
+            if allow_partial_hybrid_on_error and candidates:
+                return _choose_hybrid_answer(candidates, context)
+            raise RuntimeError(
+                "Hybrid answering requires both Ollama and Gemini calls to succeed. "
+                + " | ".join(call_errors)
+            )
+
+        if candidates:
+            return _choose_hybrid_answer(candidates, context)
+
+        raise RuntimeError("Hybrid answering failed: no model candidates produced.")
+
+    llm = load_llm()
+    if llm is None:
+        return _extractive_fallback_answer(question, context)
+    return _run_prompt_single_llm(llm, question, context, enforce_grounding, preserve_format)
 
 
 def generate_insights_by_document(namespace: str | None = None) -> list[dict]:
     """Generate one-line summary and key insights for each uploaded document."""
     sources = get_document_sources(namespace=namespace)
+    if len(sources) > INSIGHTS_MAX_SOURCES:
+        sources = sources[-INSIGHTS_MAX_SOURCES:]
     results = []
 
     for source in sources:
@@ -1736,11 +2829,15 @@ def generate_insights_by_document(namespace: str | None = None) -> list[dict]:
                 "Give a one-line summary of the paper.",
                 summary_ctx,
                 enforce_grounding=False,
+                preserve_format=True,
+                allow_partial_hybrid_on_error=INSIGHTS_ALLOW_PARTIAL_HYBRID,
             )
             key_insights = _run_prompt_with_context(
                 "Extract 5 key insights from this paper in bullet points.",
                 insights_ctx,
                 enforce_grounding=False,
+                preserve_format=True,
+                allow_partial_hybrid_on_error=INSIGHTS_ALLOW_PARTIAL_HYBRID,
             )
 
             results.append(
@@ -1763,7 +2860,7 @@ def generate_insights_by_document(namespace: str | None = None) -> list[dict]:
     return results
 
 def load_llm():
-    """Lazy-load and reuse LLM client (Ollama/Groq); return None for extractive fallback mode."""
+    """Lazy-load and reuse LLM client for non-hybrid execution."""
     global _llm
     if LLM_PROVIDER == "extractive":
         return None
@@ -1771,10 +2868,31 @@ def load_llm():
     if _llm is not None:
         return _llm
 
-    if LLM_PROVIDER in {"auto", "ollama"}:
-        _llm = _build_ollama_llm()
+    if LLM_PROVIDER == "gemini":
+        _llm = _load_gemini_llm()
         if _llm is not None:
             return _llm
+        if GEMINI_REQUIRED:
+            raise RuntimeError(
+                "Gemini is required but unavailable. Set GEMINI_API_KEY and install langchain-google-genai."
+            )
+        return None
+
+    if LLM_PROVIDER == "hybrid":
+        # Hybrid answers are orchestrated in _run_prompt_with_context.
+        _llm = _load_ollama_llm() or _load_gemini_llm()
+        return _llm
+
+    if LLM_PROVIDER in {"auto", "ollama"}:
+        _llm = _load_ollama_llm()
+        if _llm is not None:
+            return _llm
+
+    if OLLAMA_REQUIRED:
+        raise RuntimeError(
+            "Ollama is required but unavailable. "
+            "Start Ollama, ensure model is pulled, and verify OLLAMA_BASE_URL/OLLAMA_MODEL."
+        )
 
     if not _groq_enabled():
         return None
@@ -1848,23 +2966,7 @@ def reset_vector_store(namespace: str | None = None) -> None:
 def create_rag_chain(retriever, llm):
     """Create a RAG chain using modern LCEL pattern"""
     prompt = PromptTemplate.from_template(
-        """You have access to content from multiple documents. \
-Answer using ONLY the context below. \
-Do not use outside knowledge or guess. \
-If the answer spans multiple documents, synthesize strictly from the provided context. \
-If the answer is not in the context, reply exactly: I don't know based on the provided context.
-
-Write a concise answer (3-6 sentences) that directly addresses the user's question terms.
-Only include claims that can be supported by the context.
-Do not add prefatory text.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:"""
+        SYSTEM_PROMPT_TEMPLATE + "\n\n" + USER_PROMPT_TEMPLATE
     )
     
     # Create RAG chain using LCEL (Langchain Expression Language)
@@ -1895,28 +2997,10 @@ def ask_question(question, namespace: str | None = None):
         return f"Error while processing your question: {str(e)}. Please ensure the PDF was uploaded correctly."
 
 
-def _is_offer_field_question(question: str) -> bool:
-    """Return True for structured offer-letter field questions."""
-    q_lower = question.lower()
-    field_keywords = [
-        "company", "organization", "employer", "firm", "name of the company",
-        "location", "office", "address", "located", "where", "centre", "center",
-        "join", "start", "commencement", "date", "doj", "when", "beginning",
-        "salary", "ctc", "compensation", "pay", "stipend", "lpa", "remuneration",
-        "designation", "position", "role", "title", "profile", "intern", "engineer",
-    ]
-    return any(keyword in q_lower for keyword in field_keywords)
-
-
-def _is_company_name_question(question: str) -> bool:
-    q_lower = question.lower()
-    return any(k in q_lower for k in ["company name", "name of the company", "organization name", "employer name", "which company"])
-
-
 def _strict_evidence_answer(question: str, docs: list[Document], max_quotes: int = 3) -> str:
     """Build answer only from exact context quotes with source/page references."""
     if not docs:
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     q_words = _content_words(question)
     ranked_docs = sorted(
@@ -1963,7 +3047,7 @@ def _strict_evidence_answer(question: str, docs: list[Document], max_quotes: int
             break
 
     if not lines:
-        return "I don't know based on the provided context."
+        return ANSWER_NOT_FOUND_TEXT
 
     return "\n".join(lines)
 
@@ -1978,7 +3062,18 @@ def ask_question_with_sources(
     if not question or not question.strip():
         return {"error": "Please enter a valid question."}
 
+    # Greetings/chitchat should not be forced into strict retrieval answers.
+    if _is_smalltalk_question(question):
+        return {
+            "answer": _smalltalk_response(),
+            "sources": [],
+        }
+
     try:
+        override_result = _lookup_qa_override(question)
+        if override_result is not None:
+            return override_result
+
         if not vector_store_exists(namespace=namespace):
             return {"error": "No document has been uploaded yet. Please upload and process a supported file first."}
 
@@ -2007,62 +3102,63 @@ def ask_question_with_sources(
         docs = _build_multi_source_docs(question, k_per_source=resolved_k, namespace=namespace)
         context = _docs_to_context(docs) if docs else ""
 
-        # For structured offer-letter fields, do deterministic extraction before support gating.
-        if _is_offer_field_question(question):
-            q_lower = question.lower()
-            focused_query = question
-            if any(k in q_lower for k in ["location", "office", "address", "where", "located", "centre", "center"]):
-                focused_query = "office location based at centre center address city"
-            elif any(k in q_lower for k in ["join", "commencement", "doj", "date", "start", "when"]):
-                focused_query = "date of commencement joining date will be from"
-            elif any(k in q_lower for k in ["designation", "role", "position", "title", "intern", "engineer"]):
-                focused_query = "will be designated as position role title"
-            elif _is_company_name_question(question):
-                focused_query = "company name organization legal entity"
+        initial_supported = _query_supported_by_docs(question, docs)
+        initial_passes_threshold = _passes_retrieval_threshold(docs)
+        initial_term_support = _query_term_support_ratio(question, docs)
 
-            focused_docs = _build_multi_source_docs(focused_query, k_per_source=resolved_k, namespace=namespace)
-            merged_docs = focused_docs if focused_docs else docs
-            merged_context = _docs_to_context(merged_docs) if merged_docs else context
-
-            if merged_context:
-                extracted_answer = _extract_offer_field_directly(question, merged_context)
-                if extracted_answer:
-                    result = {
-                        "answer": extracted_answer,
-                        "sources": _serialize_sources(merged_docs, max_items=1),
-                    }
-                    if not strict_evidence:
-                        _cache_set(cache_key, result)
-                    return result
-                if _is_company_name_question(question):
-                    result = {
-                        "answer": "I don't know based on the provided context.",
-                        "sources": _serialize_sources(merged_docs, max_items=1),
-                    }
-                    if not strict_evidence:
-                        _cache_set(cache_key, result)
-                    return result
-
-        if not _query_supported_by_docs(question, docs):
-            # Broader second-pass retrieval for difficult or sparse queries before hard fallback.
-            broad_k = min(16, max(resolved_k + 4, int(resolved_k * 1.5)))
+        # Avoid early "I don't know" on weak vector scores when lexical evidence is clearly present.
+        if not (initial_supported and (initial_passes_threshold or initial_term_support >= 0.45)):
+            broad_k = min(24, max(resolved_k + 6, int(resolved_k * 2)))
             broad_docs = _build_multi_source_docs(question, k_per_source=broad_k, namespace=namespace)
-            if broad_docs and _query_supported_by_docs(question, broad_docs):
-                docs = broad_docs
+            keyword_docs = _keyword_fallback_docs(question, namespace=namespace, max_docs=max(10, broad_k))
+
+            selected_docs: list[Document] | None = None
+            for candidate in [broad_docs, keyword_docs]:
+                if not candidate:
+                    continue
+                supported = _query_supported_by_docs(question, candidate)
+                passes_threshold = _passes_retrieval_threshold(candidate)
+                term_support = _query_term_support_ratio(question, candidate)
+                if supported and (passes_threshold or term_support >= 0.45):
+                    selected_docs = candidate
+                    break
+
+            # Final fallback for acronym/entity-heavy prompts where exact term hit is explicit.
+            if selected_docs is None and keyword_docs:
+                if _query_term_support_ratio(question, keyword_docs) >= 0.50:
+                    selected_docs = keyword_docs
+
+            if selected_docs is not None:
+                docs = selected_docs
                 context = _docs_to_context(docs)
             else:
-                result = {
-                    "answer": "I don't know based on the provided context.",
-                    "sources": [],
-                }
-                if not strict_evidence:
-                    _cache_set(cache_key, result)
-                return result
+                # Keep initial retrieved docs when present to avoid false negatives on noisy/typoed queries.
+                if not docs:
+                    result = {
+                        "answer": ANSWER_NOT_FOUND_TEXT,
+                        "sources": [],
+                    }
+                    if not strict_evidence:
+                        _cache_set(cache_key, result)
+                    return result
 
-        if strict_evidence:
+        # Optional validation layer: keep it non-blocking to avoid false negatives.
+        filtered_docs = _filter_docs_by_dataset_similarity(docs)
+        if filtered_docs:
+            docs = filtered_docs
+
+        context = _docs_to_context(docs)
+
+        if _is_summary_like_question(question):
+            answer = _extractive_summary_from_context(context)
+        elif strict_evidence:
             answer = _strict_evidence_answer(question, docs)
         else:
             answer = _run_prompt_with_context(question, context)
+
+        if answer.strip() == ANSWER_NOT_FOUND_TEXT and docs and _is_summary_like_question(question):
+            answer = _extractive_summary_from_context(context)
+
         answer = _postprocess_answer(question, answer, context)
         supported_docs = _filter_sources_by_answer_support(answer, docs)
         result = {

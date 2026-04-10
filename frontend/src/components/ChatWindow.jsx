@@ -93,10 +93,30 @@ export default function ChatWindow() {
       typeAnswer(fullAnswer, sourceList);
     } catch (err) {
       const detail = err?.response?.data?.detail;
-      const errorText =
-        typeof detail === "string" && detail.trim()
-          ? `Error: ${detail}`
-          : "Error: Unable to get an answer from the backend.";
+      const timeoutError = err?.code === "ECONNABORTED";
+      const networkError = !err?.response;
+
+      let resolvedDetail = "";
+      if (typeof detail === "string") {
+        resolvedDetail = detail.trim();
+      } else if (Array.isArray(detail)) {
+        resolvedDetail = detail
+          .map((item) => {
+            if (typeof item === "string") return item;
+            if (item && typeof item.msg === "string") return item.msg;
+            return "";
+          })
+          .filter(Boolean)
+          .join("; ");
+      }
+
+      const errorText = resolvedDetail
+        ? `Error: ${resolvedDetail}`
+        : timeoutError
+          ? "Error: The request took too long. Try a shorter question or increase frontend timeout (VITE_ASK_TIMEOUT_MS)."
+          : networkError
+            ? "Error: Backend is unreachable. Ensure API server is running on http://127.0.0.1:8000."
+            : "Error: Unable to get an answer from the backend.";
       setMessages((prev) => [
         ...prev,
         { role: "ai", text: errorText, sources: [] },
